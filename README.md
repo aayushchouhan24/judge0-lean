@@ -72,9 +72,6 @@ of their own cgroup to isolate, so student code is capped by the pod's CPU and m
 and is visible to a CPU-based HorizontalPodAutoscaler. Probe `/healthz`. Run Redis with
 `maxmemory-policy noeviction`.
 
-[`ops/`](ops/) has scripts to build, push, deploy, roll back, warm up for events, rotate
-secrets and smoke-test an endpoint.
-
 ## Configuration
 
 Everything in Judge0's `judge0.conf` still applies (time, memory and process limits, auth,
