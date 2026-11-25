@@ -1,4 +1,14 @@
 class HealthController < ApplicationController
+  skip_before_action :authenticate_request, only: [:healthz]
+
+  # Cheap liveness/readiness probe: no shell-outs, just a Redis ping.
+  def healthz
+    JUDGE0_REDIS.ping
+    render json: { status: "ok" }
+  rescue StandardError => e
+    render json: { status: "error", error: e.class.name }, status: :service_unavailable
+  end
+
   def workers
     Resque.workers.first.try(:prune_dead_workers) if params[:prune_dead_workers] == "true"
 

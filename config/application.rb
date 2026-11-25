@@ -3,7 +3,6 @@ require_relative 'boot'
 require "rails"
 require "active_model/railtie"
 require "active_job/railtie"
-require "active_record/railtie"
 require "action_controller/railtie"
 require "action_mailer/railtie"
 require "action_view/railtie"
@@ -21,6 +20,9 @@ module Judge0API
     end
 
     config.active_job.queue_adapter = :resque
+
+    # Unknown tokens and language ids answer 404, as ActiveRecord::RecordNotFound did.
+    config.action_dispatch.rescue_responses["RecordNotFound"] = :not_found
 
     config.middleware.insert_before 0, Rack::Cors do
       origins = []

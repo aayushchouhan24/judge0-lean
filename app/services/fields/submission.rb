@@ -16,7 +16,7 @@ module Fields
       end
 
       if fields.include?(UNIVERSAL_FIELD)
-        @requested_fields = available_fields
+        @requested_fields = Config::SLIM_UNIVERSAL_FIELDS ? default_fields : available_fields
       else
         @requested_fields = (fields - @invalid_fields).presence || default_fields
       end

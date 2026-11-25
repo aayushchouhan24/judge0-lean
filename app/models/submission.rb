@@ -1,49 +1,66 @@
-# == Schema Information
-#
-# Table name: submissions
-#
-#  id                                         :integer          not null, primary key
-#  source_code                                :text
-#  language_id                                :integer
-#  stdin                                      :text
-#  expected_output                            :text
-#  stdout                                     :text
-#  status_id                                  :integer
-#  created_at                                 :datetime
-#  finished_at                                :datetime
-#  time                                       :decimal(, )
-#  memory                                     :integer
-#  stderr                                     :text
-#  token                                      :string
-#  number_of_runs                             :integer
-#  cpu_time_limit                             :decimal(, )
-#  cpu_extra_time                             :decimal(, )
-#  wall_time_limit                            :decimal(, )
-#  memory_limit                               :integer
-#  stack_limit                                :integer
-#  max_processes_and_or_threads               :integer
-#  enable_per_process_and_thread_time_limit   :boolean
-#  enable_per_process_and_thread_memory_limit :boolean
-#  max_file_size                              :integer
-#  compile_output                             :text
-#  exit_code                                  :integer
-#  exit_signal                                :integer
-#  message                                    :text
-#  wall_time                                  :decimal(, )
-#  compiler_options                           :string
-#  command_line_arguments                     :string
-#  redirect_stderr_to_stdout                  :boolean
-#  callback_url                               :string
-#  additional_files                           :binary
-#  enable_network                             :boolean
-#  started_at                                 :datetime
-#  queued_at                                  :datetime
-#  updated_at                                 :datetime
-#  queue_host                                 :string
-#  execution_host                             :string
-#
+require "digest"
 
-class Submission < ApplicationRecord
+# Submissions are stored in Redis with a TTL instead of a database: they only need
+# to exist between a client creating them and reading the result.
+#
+#   judge0:submission:<token>  JSON of all attributes except additional_files
+#   judge0:files:<sha256>      additional_files archive, shared by identical submissions
+#   judge0:submission_id       counter used for numeric ids (sandbox box ids)
+#
+# Every save refreshes the TTL, so queued and running submissions do not expire.
+class Submission
+  include ActiveModel::Model
+  include ActiveModel::Attributes
+  include ActiveModel::Validations::Callbacks
+  include ActiveModel::Serialization
+
+  TTL = (ENV["SUBMISSION_TTL_SECONDS"].presence || 3600).to_i
+  KEY_PREFIX = "judge0:submission:"
+  FILES_KEY_PREFIX = "judge0:files:"
+  ID_SEQUENCE_KEY = "judge0:submission_id"
+  MAX_ID = 2147483647
+
+  attribute :id,                                         :integer
+  attribute :source_code,                                :string
+  attribute :language_id,                                :integer
+  attribute :stdin,                                      :string
+  attribute :expected_output,                            :string
+  attribute :stdout,                                     :string
+  attribute :status_id,                                  :integer
+  attribute :created_at,                                 :datetime
+  attribute :finished_at,                                :datetime
+  attribute :time,                                       :decimal
+  attribute :memory,                                     :integer
+  attribute :stderr,                                     :string
+  attribute :token,                                      :string
+  attribute :number_of_runs,                             :integer
+  attribute :cpu_time_limit,                             :decimal
+  attribute :cpu_extra_time,                             :decimal
+  attribute :wall_time_limit,                            :decimal
+  attribute :memory_limit,                               :integer
+  attribute :stack_limit,                                :integer
+  attribute :max_processes_and_or_threads,               :integer
+  attribute :enable_per_process_and_thread_time_limit,   :boolean
+  attribute :enable_per_process_and_thread_memory_limit, :boolean
+  attribute :max_file_size,                              :integer
+  attribute :compile_output,                             :string
+  attribute :exit_code,                                  :integer
+  attribute :exit_signal,                                :integer
+  attribute :message,                                    :string
+  attribute :wall_time,                                  :decimal
+  attribute :compiler_options,                           :string
+  attribute :command_line_arguments,                     :string
+  attribute :redirect_stderr_to_stdout,                  :boolean
+  attribute :callback_url,                               :string
+  attribute :additional_files,                           :binary
+  attribute :enable_network,                             :boolean
+  attribute :started_at,                                 :datetime
+  attribute :queued_at,                                  :datetime
+  attribute :updated_at,                                 :datetime
+  attribute :queue_host,                                 :string
+  attribute :execution_host,                             :string
+  attribute :additional_files_digest,                    :string
+
   validates :source_code, presence: true, unless: -> { is_project }
   validates :source_code, absence: true, if: -> { is_project }
   validates :additional_files, presence: true, if: -> { is_project }
@@ -76,14 +93,89 @@ class Submission < ApplicationRecord
            :command_line_arguments_allowed, :callbacks_allowed,
            :additional_files_allowed, :network_allowed
 
-  before_create :generate_token
   before_validation :set_defaults
 
-  enumeration :status
+  def self.per_page
+    20
+  end
 
-  default_scope { order(created_at: :desc) }
+  # Attribute names exposed to clients (the serializer); the files digest is internal.
+  def self.column_names
+    @column_names ||= attribute_names - ["additional_files_digest"]
+  end
 
-  self.per_page = 20
+  def self.find_by(token:)
+    return nil if token.blank?
+    from_store(JUDGE0_REDIS.get(KEY_PREFIX + token.to_s))
+  end
+
+  def self.find_by!(token:)
+    find_by(token: token) || raise(RecordNotFound, "Couldn't find Submission")
+  end
+
+  # Returns submissions in the order of tokens, nil for missing or expired ones.
+  def self.find_all(tokens)
+    return [] if tokens.empty?
+    JUDGE0_REDIS.mget(*tokens.collect { |t| KEY_PREFIX + t.to_s }).collect { |json| from_store(json) }
+  end
+
+  def self.from_store(json)
+    return nil if json.nil?
+    submission = new
+    JSON.parse(json).each do |name, value|
+      submission.send(:write_stored_attribute, name, value) if attribute_names.include?(name)
+    end
+    submission
+  end
+
+  def [](name)
+    @attributes.fetch_value(name.to_s)
+  end
+
+  def []=(name, value)
+    @attributes.write_from_user(name.to_s, value)
+  end
+
+  def new_record?
+    id.nil?
+  end
+
+  def save(validate: true)
+    return false if validate && !valid?
+
+    if new_record?
+      self.token ||= SecureRandom.uuid
+      self.id = (JUDGE0_REDIS.incr(ID_SEQUENCE_KEY) % MAX_ID) + 1
+      self.created_at ||= Time.now
+    end
+    self.updated_at = Time.now
+
+    persist_additional_files
+    JUDGE0_REDIS.set(KEY_PREFIX + token, stored_attributes.to_json, ex: TTL)
+    true
+  end
+
+  # Internal updates (queueing, worker results) are always stored, without re-validation.
+  def update(attributes)
+    assign_attributes(attributes)
+    save(validate: false)
+  end
+
+  def delete
+    JUDGE0_REDIS.del(KEY_PREFIX + token) if token.present?
+    self
+  end
+
+  def reload
+    fresh = self.class.find_by!(token: token)
+    @attributes = fresh.instance_variable_get(:@attributes)
+    instance_variables.grep(/\A@decoded_/).each { |ivar| remove_instance_variable(ivar) }
+    @language = nil
+    @additional_files_loaded = false
+    @additional_files_dirty = false
+    self
+  end
+
 
   def source_code
     @decoded_source_code ||= Base64Service.decode(self[:source_code])
@@ -145,6 +237,26 @@ class Submission < ApplicationRecord
   end
 
 
+  # Loaded from Redis only when used (workers), never on polls.
+  def additional_files
+    if !@additional_files_loaded && !@additional_files_dirty && additional_files_digest.present?
+      data = JUDGE0_REDIS.get(FILES_KEY_PREFIX + additional_files_digest)
+      @attributes.write_from_database("additional_files", data&.b)
+      @additional_files_loaded = true
+    end
+    super
+  end
+
+  def additional_files=(value)
+    super(value)
+    @additional_files_dirty = true
+  end
+
+  def additional_files?
+    additional_files.present?
+  end
+
+
   def language
     @language ||= Language.unscoped.find_by(id: language_id)
   end
@@ -164,6 +276,40 @@ class Submission < ApplicationRecord
   end
 
   private
+
+  def write_stored_attribute(name, value)
+    @attributes.write_from_database(name, value)
+  end
+
+  def stored_attributes
+    (self.class.attribute_names - ["additional_files"]).index_with do |name|
+      value = self[name]
+      case value
+      when BigDecimal then value.to_s("F")
+      when Time, DateTime then value.iso8601(6)
+      else value
+      end
+    end
+  end
+
+  # Archives are stored once per content hash, so identical test cases share one copy.
+  def persist_additional_files
+    if @additional_files_dirty
+      data = self[:additional_files]
+      if data.present?
+        digest = Digest::SHA256.hexdigest(data)
+        key = FILES_KEY_PREFIX + digest
+        JUDGE0_REDIS.expire(key, TTL) unless JUDGE0_REDIS.set(key, data, ex: TTL, nx: true)
+        self.additional_files_digest = digest
+      else
+        self.additional_files_digest = nil
+      end
+      @additional_files_dirty = false
+      @additional_files_loaded = true
+    elsif additional_files_digest.present?
+      JUDGE0_REDIS.expire(FILES_KEY_PREFIX + additional_files_digest, TTL)
+    end
+  end
 
   def language_existence
     if not language
@@ -223,12 +369,6 @@ class Submission < ApplicationRecord
     unless Config::ALLOW_ENABLE_NETWORK
       errors.add(:enable_network, "enabling network is not allowed")
     end
-  end
-
-  def generate_token
-    begin
-      self.token = SecureRandom.uuid
-    end while self.class.exists?(token: token)
   end
 
   def set_defaults

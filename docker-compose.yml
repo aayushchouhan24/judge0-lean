@@ -25,23 +25,14 @@ services:
     <<: *default-logging
     restart: always
 
-  db:
-    image: postgres:16.2
-    env_file: judge0.conf
-    volumes:
-      - data:/var/lib/postgresql/data/
-    <<: *default-logging
-    restart: always
-
+  # The only datastore: job queue and short-lived submissions (TTL).
+  # noeviction: an evicting policy would silently drop queued jobs and results.
   redis:
     image: redis:7.2.4
     command: [
       "bash", "-c",
-      'docker-entrypoint.sh --appendonly no --requirepass "$$REDIS_PASSWORD"'
+      'docker-entrypoint.sh --appendonly no --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"'
     ]
     env_file: judge0.conf
     <<: *default-logging
     restart: always
-
-volumes:
-  data:

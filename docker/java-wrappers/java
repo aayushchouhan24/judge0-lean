@@ -1,0 +1,4 @@
+#!/bin/sh
+# Serial GC: fewer JVM threads (counts against the sandbox process limit) and less memory.
+# Full tiered JIT is kept so CPU-heavy solutions are not slowed down.
+exec /usr/local/jdk-17/bin/java -XX:+UseSerialGC -Xshare:auto "$@"

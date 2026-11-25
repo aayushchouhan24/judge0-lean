@@ -1,0 +1,3 @@
+#!/bin/sh
+# javac only needs a short-lived JVM: C1-only JIT and serial GC start faster and use fewer threads.
+exec /usr/local/jdk-17/bin/javac -J-XX:TieredStopAtLevel=1 -J-XX:+UseSerialGC -J-Xshare:auto "$@"

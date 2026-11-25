@@ -34,17 +34,20 @@ export AUTHN_HEADER=${AUTHN_HEADER:-X-Auth-Token}
 export AUTHZ_HEADER=${AUTHZ_HEADER:-X-Auth-User}
 
 # Workers
-export INTERVAL=${INTERVAL:-0.1}
-export COUNT=${COUNT:-$(( $(nproc) * 2 ))}
+export INTERVAL=${INTERVAL:-0.5}
+# One sandbox per CPU; more makes runs compete and skews time limits.
+# In containers nproc may report the host's CPUs, so set COUNT to the CPU limit there.
+export COUNT=${COUNT:-$(nproc)}
 export QUEUE=${JUDGE0_VERSION:-unknown} # This option is not available in judge0.conf
+# Run jobs inside the worker process instead of forking Rails (and reconnecting) per job.
+export FORK_PER_JOB=${FORK_PER_JOB:-false}
+
+# Telemetry is opt-in in this fork.
+export JUDGE0_TELEMETRY_ENABLE=${JUDGE0_TELEMETRY_ENABLE:-false}
 
 # Database
 export REDIS_HOST=${REDIS_HOST:-localhost}
 export REDIS_PORT=${REDIS_PORT:-6379}
-export POSTGRES_HOST=${POSTGRES_HOST:-localhost}
-export POSTGRES_PORT=${POSTGRES_PORT:-5432}
-export POSTGRES_DB=${POSTGRES_DB:-postgres}
-export POSTGRES_USER=${POSTGRES_USER:-postgres}
 
 # Other
 export RUBYOPT=-W:no-deprecated

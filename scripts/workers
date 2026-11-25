@@ -4,7 +4,30 @@
 # Usage: ./scripts/workers
 #
 source ./scripts/load-config
-export | sudo tee /api/environment
+export | sudo tee /api/environment > /dev/null
+
+# isolate 2 (cgroup v2) needs its lock dir and a cgroup subtree with cpu/memory/pids
+# delegated. We delegate inside this container's own cgroup (privileged containers can
+# write it, whether they see the host hierarchy or a private namespace): our processes
+# move to a leaf and isolate creates boxes in a sibling, so sandboxes count against the
+# container's CPU and memory limits (and are visible to autoscaling).
+sudo mkdir -p /run/isolate/locks
+self_cg=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)
+base="/sys/fs/cgroup${self_cg%/}"
+sudo mkdir -p "$base/judge0-workers"
+# cgroup v2 forbids controllers on a cgroup that holds processes; retry for late forks.
+for _ in 1 2 3 4 5; do
+    pids=$(cat "$base/cgroup.procs")
+    [ -z "$pids" ] && break
+    for pid in $pids; do echo "$pid" | sudo tee "$base/judge0-workers/cgroup.procs" > /dev/null 2>&1; done
+done
+echo "+cpu +memory +pids" | sudo tee "$base/cgroup.subtree_control" > /dev/null
+cg_root="$base/judge0"
+sudo sed -i "s|^cg_root *=.*|cg_root = $cg_root|" /usr/local/etc/isolate
+sudo mkdir -p "$cg_root"
+if ! echo "+cpu +memory +pids" | sudo tee "$cg_root/cgroup.subtree_control" > /dev/null; then
+    echo "WARNING: could not enable cpu/memory/pids controllers in $cg_root; sandboxes will fail." >&2
+fi
 
 run_resque=1
 resque_pid=0

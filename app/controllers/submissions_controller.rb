@@ -8,30 +8,8 @@ class SubmissionsController < ApplicationController
   before_action :set_base64_encoded
 
   def index
-    page = params[:page].try(:to_i) || 1
-    per_page = params[:per_page].try(:to_i) || Submission.per_page
-
-    if page <= 0
-      render json: { error: "invalid page: #{page}" }, status: :bad_request
-      return
-    elsif per_page < 0
-      render json: { error: "invalid per_page: #{per_page}" }, status: :bad_request
-      return
-    end
-
-    submissions = Submission.paginate(page: page, per_page: per_page)
-    serializable_submissions = ActiveModelSerializers::SerializableResource.new(
-      submissions, { each_serializer: SubmissionSerializer, base64_encoded: @base64_encoded, fields: @requested_fields }
-    )
-
-    render json: {
-      submissions: serializable_submissions.as_json,
-      meta: pagination_dict(submissions)
-    }
-  rescue Encoding::UndefinedConversionError => e
-    render json: {
-      error: "some attributes for one or more submissions cannot be converted to UTF-8, use base64_encoded=true query parameter"
-    }, status: :bad_request
+    # Submissions are short-lived entries in Redis, so there is no listing.
+    render json: { error: "listing submissions is not supported by this Judge0 build" }, status: :bad_request
   end
 
   def destroy
@@ -56,9 +34,7 @@ class SubmissionsController < ApplicationController
 
   def show
     token = params[:token]
-    render json: Rails.cache.fetch("#{token}", expires_in: Config::SUBMISSION_CACHE_DURATION, race_condition_ttl: 0.1*Config::SUBMISSION_CACHE_DURATION) {
-      Submission.find_by!(token: token)
-    }, base64_encoded: @base64_encoded, fields: @requested_fields
+    render json: Submission.find_by!(token: token), base64_encoded: @base64_encoded, fields: @requested_fields
   rescue Encoding::UndefinedConversionError
     render_conversion_error(:bad_request)
   end
@@ -78,7 +54,8 @@ class SubmissionsController < ApplicationController
       return
     end
 
-    existing_submissions = Hash[Submission.where(token: tokens).collect{ |s| [s.token, s] }]
+    # One MGET; archives live under separate keys and are never read here.
+    existing_submissions = Hash[Submission.find_all(tokens).compact.collect{ |s| [s.token, s] }]
 
     submissions = []
     tokens.each do |token|
@@ -139,19 +116,20 @@ class SubmissionsController < ApplicationController
     submissions = params[:submissions].each.collect{ |p| Submission.new(submission_params(p)) }
 
     response = []
-    has_valid_submission = false
+    saved_submissions = []
 
     submissions.each do |submission|
       if submission.save
-        IsolateRunner.perform_later(submission)
+        saved_submissions << submission
         response << { token: submission.token }
-        has_valid_submission = true
       else
         response << submission.errors
       end
     end
 
-    render json: response, status: has_valid_submission ? :created : :unprocessable_entity
+    IsolateRunner.perform_later_batch(saved_submissions)
+
+    render json: response, status: saved_submissions.any? ? :created : :unprocessable_entity
   end
 
   private

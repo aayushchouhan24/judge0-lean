@@ -1,0 +1,33 @@
+diff --git a/isolate.c b/isolate.c
+index 35a81a1..1818e33 100644
+--- a/isolate.c
++++ b/isolate.c
+@@ -1160,6 +1160,8 @@ enum opt_code {
+   OPT_VERSION,
+   OPT_CG,
+   OPT_CG_MEM,
++  OPT_CG_TIMING,
++  OPT_NO_CG_TIMING,
+   OPT_SHARE_NET,
+   OPT_INHERIT_FDS,
+   OPT_STDERR_TO_STDOUT,
+@@ -1180,6 +1182,8 @@ static const struct option long_opts[] = {
+   { "box-id",		1, NULL, 'b' },
+   { "chdir",		1, NULL, 'c' },
+   { "cg",		0, NULL, OPT_CG },
++  { "cg-timing",	0, NULL, OPT_CG_TIMING },
++  { "no-cg-timing",	0, NULL, OPT_NO_CG_TIMING },
+   { "cg-mem",		1, NULL, OPT_CG_MEM },
+   { "cleanup",		0, NULL, OPT_CLEANUP },
+   { "core",		1, NULL, OPT_CORE },
+@@ -1334,6 +1338,10 @@ main(int argc, char **argv)
+ 	cg_memory_limit = opt_uint(optarg);
+ 	require_cg = 1;
+ 	break;
++      case OPT_CG_TIMING:
++      case OPT_NO_CG_TIMING:
++	/* Judge0 1.13 passes these isolate 1.x flags; cgroup v2 isolate always uses cgroup timing. */
++	break;
+       case OPT_SHARE_NET:
+ 	share_net = 1;
+ 	break;

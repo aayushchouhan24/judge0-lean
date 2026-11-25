@@ -4,6 +4,7 @@ agricius
 Dockerfile*
 docker-compose*
 docs/maintainers/
+graphify-out/
 judge0.conf
 log/*
 scripts/dev/

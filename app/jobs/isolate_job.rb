@@ -1,5 +1,10 @@
+require "digest"
+require "fileutils"
+require "json"
+
 class IsolateJob < ApplicationJob
-  retry_on RuntimeError, wait: 0.1.seconds, attempts: 100
+  # Only triggers when the job starts before its submissions are visible in the database.
+  retry_on RuntimeError, wait: 0.25.seconds, attempts: 20
 
   queue_as ENV["JUDGE0_VERSION"].to_sym
 
@@ -7,81 +12,169 @@ class IsolateJob < ApplicationJob
   STDOUT_FILE_NAME = "stdout.txt"
   STDERR_FILE_NAME = "stderr.txt"
   METADATA_FILE_NAME = "metadata.txt"
+  SNAPSHOT_FILE_NAME = "snapshot.tar"
   ADDITIONAL_FILES_ARCHIVE_FILE_NAME = "additional_files.zip"
 
   attr_reader :submission, :cgroups,
               :box_id, :workdir, :boxdir, :tmpdir,
               :source_file, :stdin_file, :stdout_file,
-              :stderr_file, :metadata_file, :additional_files_archive_file
+              :stderr_file, :metadata_file, :snapshot_file,
+              :additional_files_archive_file
 
-  def perform(submission_id)
-    @submission = Submission.find(submission_id)
-    submission.update(status: Status.process, started_at: DateTime.now, execution_host: ENV["HOSTNAME"])
+  # Accepts a single submission token or an array of tokens. All submissions in an
+  # array share language, source code, additional files and compile settings
+  # (see IsolateRunner.compile_group_key), so the sandbox is prepared and the
+  # program is compiled once, then run once per submission (test case).
+  def perform(submission_tokens)
+    tokens = Array(submission_tokens)
+    found = Submission.find_all(tokens)
+    missing = tokens.each_index.reject { |i| found[i] }.collect { |i| tokens[i] }
+    raise "Submissions #{missing.join(", ")} not found." if missing.any?
 
-    time = []
-    memory = []
+    @submissions = found
+    @leader = @submissions.first
+    @submission = @leader
 
-    submission.number_of_runs.times do
-      initialize_workdir
-      if compile == :failure
-        cleanup
-        return
-      end
-      run
-      verify
-
-      time << submission.time
-      memory << submission.memory
-
-      cleanup
-      break if submission.status != Status.ac
+    started_at = DateTime.now
+    @submissions.each do |s|
+      s.update(status: Status.process, started_at: started_at, execution_host: ENV["HOSTNAME"])
     end
 
-    submission.time = time.inject(&:+).to_f / time.size
-    submission.memory = memory.inject(&:+).to_f / memory.size
-    submission.save
+    initialize_workdir
+    if prepare_box == :failure
+      cleanup
+      return
+    end
 
+    execute_all
+
+    cleanup
   rescue Exception => e
-    raise e.message unless submission
-    submission.update(message: e.message, status: Status.boxerr, finished_at: DateTime.now)
+    raise e.message unless @leader
+    (@submissions || [@leader]).each do |s|
+      next unless [Status.queue.id, Status.process.id].include?(s.status_id)
+      s.update(message: e.message, status: Status.boxerr, finished_at: DateTime.now)
+    end
     cleanup(raise_exception = false)
   ensure
-    call_callback
+    (@submissions || []).each { |s| call_callback(s) }
   end
 
   private
 
+  # Runs the leader in this box and the other submissions in parallel, each in its own
+  # box restored from the compiled snapshot, so slow or looping test cases do not
+  # wait for each other (stock Judge0 also ran them in parallel, one job each).
+  def execute_all
+    others = @submissions.drop(1)
+    concurrency = [[Config::BATCH_RUN_CONCURRENCY, 1].max - 1, others.size].min
+
+    if concurrency.zero?
+      @submissions.each do |s|
+        @submission = s
+        execute_submission
+      end
+      return
+    end
+
+    pending = Queue.new
+    others.each { |s| pending << s }
+    drain = -> { while (s = (pending.pop(true) rescue nil)); IsolateJob.new.send(:run_from_snapshot, s, snapshot_file); end }
+
+    threads = Array.new(concurrency) { Thread.new(&drain) }
+    begin
+      @submission = @leader
+      execute_submission
+      drain.call
+    ensure
+      threads.each(&:join) # never clean up the shared snapshot while other boxes still use it
+    end
+  end
+
+  # Runs one submission in its own box, starting from another box's compiled snapshot.
+  # Callbacks are sent by the job that owns the batch.
+  def run_from_snapshot(submission, source_snapshot)
+    @submissions = [submission]
+    @leader = submission
+    @submission = submission
+    initialize_workdir
+    `sudo cp #{source_snapshot} #{snapshot_file}`
+    restore_snapshot
+    execute_submission
+    cleanup
+  rescue Exception => e
+    if [Status.queue.id, Status.process.id].include?(submission.status_id)
+      submission.update(message: e.message, status: Status.boxerr, finished_at: DateTime.now)
+    end
+    cleanup(raise_exception = false)
+  end
+
   def initialize_workdir
-    @box_id = submission.id%2147483647
-    @cgroups = (!submission.enable_per_process_and_thread_time_limit || !submission.enable_per_process_and_thread_memory_limit) ? "--cg" : ""
+    @box_id = @leader.id%2147483647
+    @cgroups = (!@leader.enable_per_process_and_thread_time_limit || !@leader.enable_per_process_and_thread_memory_limit) ? "--cg" : ""
     @workdir = `isolate #{cgroups} -b #{box_id} --init`.chomp
     @boxdir = workdir + "/box"
     @tmpdir = workdir + "/tmp"
-    @source_file = boxdir + "/" + submission.language.source_file.to_s
+    @source_file = boxdir + "/" + @leader.language.source_file.to_s
     @stdin_file = workdir + "/" + STDIN_FILE_NAME
     @stdout_file = workdir + "/" + STDOUT_FILE_NAME
     @stderr_file = workdir + "/" + STDERR_FILE_NAME
     @metadata_file = workdir + "/" + METADATA_FILE_NAME
+    @snapshot_file = workdir + "/" + SNAPSHOT_FILE_NAME
     @additional_files_archive_file = boxdir + "/" + ADDITIONAL_FILES_ARCHIVE_FILE_NAME
+    @runs_done = 0
 
-    [stdin_file, stdout_file, stderr_file, metadata_file].each do |f|
-      initialize_file(f)
-    end
-
-    File.open(source_file, "wb") { |f| f.write(submission.source_code) } unless submission.is_project
-    File.open(stdin_file, "wb") { |f| f.write(submission.stdin) }
-
-    extract_archive
+    initialize_files(stdin_file, stdout_file, stderr_file, metadata_file)
   end
 
-  def initialize_file(file)
-    `sudo touch #{file} && sudo chown $(whoami): #{file}`
+  def initialize_files(*files)
+    paths = files.join(" ")
+    `sudo touch #{paths} && sudo chown $(whoami): #{paths}`
+  end
+
+  # Writes source and additional files into the box and compiles them, or restores
+  # an identical compiled box from the worker-local compile cache.
+  def prepare_box
+    cache_key = compile_cache_key
+    cached = compile_cache_lookup(cache_key)
+
+    if cached && cached[:failed]
+      apply_compilation_error(cached[:compile_output])
+      return :failure
+    elsif cached
+      `sudo cp #{cached[:snapshot]} #{snapshot_file}`
+      restore_snapshot
+      apply_compile_output(cached[:compile_output])
+      return :success
+    end
+
+    File.open(source_file, "wb") { |f| f.write(@leader.source_code) } unless @leader.is_project
+    extract_archive
+
+    result, compile_output, timed_out = compile
+    if result == :failure
+      compile_cache_store(cache_key, compile_output, failed: true) unless timed_out
+      apply_compilation_error(compile_output)
+      return :failure
+    end
+
+    # Compiler warnings are reported on every submission, as when each one compiled itself.
+    apply_compile_output(compile_output)
+
+    total_runs = @submissions.sum(&:number_of_runs)
+    take_snapshot if total_runs > 1 || (result == :success && cache_key)
+    compile_cache_store(cache_key, compile_output, failed: false) if result == :success
+    :success
+  end
+
+  def apply_compile_output(compile_output)
+    @submissions.each { |s| s.compile_output = compile_output }
   end
 
   def extract_archive
-    return unless submission.additional_files?
+    return unless @leader.additional_files?
 
-    File.open(additional_files_archive_file, "wb") { |f| f.write(submission.additional_files) }
+    File.open(additional_files_archive_file, "wb") { |f| f.write(@leader.additional_files) }
 
     command = "isolate #{cgroups} \
     -s \
@@ -92,31 +185,30 @@ class IsolateJob < ApplicationJob
     -w 4 \
     -k #{Config::MAX_STACK_LIMIT} \
     -p#{Config::MAX_MAX_PROCESSES_AND_OR_THREADS} \
-    #{submission.enable_per_process_and_thread_time_limit ? (cgroups.present? ? "--no-cg-timing" : "") : "--cg-timing"} \
-    #{submission.enable_per_process_and_thread_memory_limit ? "-m " : "--cg-mem="}#{Config::MAX_MEMORY_LIMIT} \
+    #{@leader.enable_per_process_and_thread_time_limit ? (cgroups.present? ? "--no-cg-timing" : "") : "--cg-timing"} \
+    #{memory_limit_flag(@leader.enable_per_process_and_thread_memory_limit, Config::MAX_MEMORY_LIMIT)} \
     -f #{Config::MAX_EXTRACT_SIZE} \
     --run \
     -- /usr/bin/unzip -n -qq #{ADDITIONAL_FILES_ARCHIVE_FILE_NAME} \
     "
 
-    puts "[#{DateTime.now}] Extracting archive for submission #{submission.token} (#{submission.id}):"
-    puts command.gsub(/\s+/, " ")
-    puts
+    log("Extracting archive", command)
 
     `#{command}`
 
     File.delete(additional_files_archive_file)
   end
 
+  # Returns [:success | :skipped | :failure, compile_output, timed_out].
   def compile
-    unless submission.is_project
-      return :success unless submission.language.compile_cmd
+    unless @leader.is_project
+      return [:skipped, nil, false] unless @leader.language.compile_cmd
     end
 
     compile_script = boxdir + "/" + "compile.sh"
 
     acceptable_project_compile_scripts = [compile_script, boxdir + "/" + "compile"]
-    if submission.is_project
+    if @leader.is_project
       compile_file_exists = false
       acceptable_project_compile_scripts.each do |f|
         if File.file?(f)
@@ -127,16 +219,16 @@ class IsolateJob < ApplicationJob
       end
 
       unless compile_file_exists
-        return :success # If compile script does not exist then this project does not need to be compiled.
+        return [:skipped, nil, false] # If compile script does not exist then this project does not need to be compiled.
       end
     else
       # gsub can be skipped if compile script is used, but is kept for additional security.
-      compiler_options = submission.compiler_options.to_s.strip.encode("UTF-8", invalid: :replace).gsub(/[$&;<>|`]/, "")
-      File.open(compile_script, "w") { |f| f.write("#{submission.language.compile_cmd % compiler_options}") }
+      compiler_options = @leader.compiler_options.to_s.strip.encode("UTF-8", invalid: :replace).gsub(/[$&;<>|`]/, "")
+      File.open(compile_script, "w") { |f| f.write("#{@leader.language.compile_cmd % compiler_options}") }
     end
 
     compile_output_file = workdir + "/" + "compile_output.txt"
-    initialize_file(compile_output_file)
+    initialize_files(compile_output_file)
 
     command = "isolate #{cgroups} \
     -s \
@@ -149,8 +241,8 @@ class IsolateJob < ApplicationJob
     -w #{Config::MAX_WALL_TIME_LIMIT} \
     -k #{Config::MAX_STACK_LIMIT} \
     -p#{Config::MAX_MAX_PROCESSES_AND_OR_THREADS} \
-    #{submission.enable_per_process_and_thread_time_limit ? (cgroups.present? ? "--no-cg-timing" : "") : "--cg-timing"} \
-    #{submission.enable_per_process_and_thread_memory_limit ? "-m " : "--cg-mem="}#{Config::MAX_MEMORY_LIMIT} \
+    #{@leader.enable_per_process_and_thread_time_limit ? (cgroups.present? ? "--no-cg-timing" : "") : "--cg-timing"} \
+    #{memory_limit_flag(@leader.enable_per_process_and_thread_memory_limit, Config::MAX_MEMORY_LIMIT)} \
     -f #{Config::MAX_MAX_FILE_SIZE} \
     -E HOME=/tmp \
     -E PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\" \
@@ -160,46 +252,70 @@ class IsolateJob < ApplicationJob
     -- /bin/bash $(basename #{compile_script}) > #{compile_output_file} \
     "
 
-    puts "[#{DateTime.now}] Compiling submission #{submission.token} (#{submission.id}):"
-    puts command.gsub(/\s+/, " ")
-    puts
+    log("Compiling", command)
 
     `#{command}`
     process_status = $?
 
     compile_output = File.read(compile_output_file)
     compile_output = nil if compile_output.empty?
-    submission.compile_output = compile_output
 
     metadata = get_metadata
 
     reset_metadata_file
 
     files_to_remove = [compile_output_file]
-    files_to_remove << compile_script unless submission.is_project
-    files_to_remove.each do |f|
-      `sudo rm -rf #{f}`
+    files_to_remove << compile_script unless @leader.is_project
+    `sudo rm -rf #{files_to_remove.join(" ")}`
+
+    return [:success, compile_output, false] if process_status.success?
+
+    timed_out = metadata[:status] == "TO"
+    compile_output = "Compilation time limit exceeded." if timed_out
+
+    [:failure, compile_output, timed_out]
+  end
+
+  def apply_compilation_error(compile_output)
+    finished_at = DateTime.now
+    @submissions.each do |s|
+      s.compile_output = compile_output
+      s.finished_at = finished_at
+      s.time = nil
+      s.wall_time = nil
+      s.memory = nil
+      s.stdout = nil
+      s.stderr = nil
+      s.exit_code = nil
+      s.exit_signal = nil
+      s.message = nil
+      s.status = Status.ce
+      s.save(validate: false)
+    end
+  end
+
+  def execute_submission
+    File.open(stdin_file, "wb") { |f| f.write(submission.stdin) }
+
+    time = []
+    memory = []
+
+    submission.number_of_runs.times do
+      restore_snapshot if @runs_done > 0
+      run
+      verify
+      @runs_done += 1
+
+      time << submission.time
+      memory << submission.memory
+
+      reset_run_files
+      break if submission.status != Status.ac
     end
 
-    return :success if process_status.success?
-
-    if metadata[:status] == "TO"
-      submission.compile_output = "Compilation time limit exceeded."
-    end
-
-    submission.finished_at = DateTime.now
-    submission.time = nil
-    submission.wall_time = nil
-    submission.memory = nil
-    submission.stdout = nil
-    submission.stderr = nil
-    submission.exit_code = nil
-    submission.exit_signal = nil
-    submission.message = nil
-    submission.status = Status.ce
-    submission.save
-
-    return :failure
+    submission.time = time.inject(&:+).to_f / time.size
+    submission.memory = memory.inject(&:+).to_f / memory.size
+    submission.save(validate: false)
   end
 
   def run
@@ -231,7 +347,7 @@ class IsolateJob < ApplicationJob
     -k #{submission.stack_limit} \
     -p#{submission.max_processes_and_or_threads} \
     #{submission.enable_per_process_and_thread_time_limit ? (cgroups.present? ? "--no-cg-timing" : "") : "--cg-timing"} \
-    #{submission.enable_per_process_and_thread_memory_limit ? "-m " : "--cg-mem="}#{submission.memory_limit} \
+    #{memory_limit_flag(submission.enable_per_process_and_thread_memory_limit, submission.memory_limit)} \
     -f #{submission.max_file_size} \
     -E HOME=/tmp \
     -E PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\" \
@@ -242,9 +358,7 @@ class IsolateJob < ApplicationJob
     < #{stdin_file} > #{stdout_file} 2> #{stderr_file} \
     "
 
-    puts "[#{DateTime.now}] Running submission #{submission.token} (#{submission.id}):"
-    puts command.gsub(/\s+/, " ")
-    puts
+    log("Running", command)
 
     `#{command}`
 
@@ -291,30 +405,119 @@ class IsolateJob < ApplicationJob
     end
   end
 
+  # Fresh output files for the next run, without re-creating the sandbox.
+  def reset_run_files
+    `sudo rm -rf #{stdout_file} #{stderr_file} #{metadata_file}`
+    initialize_files(stdout_file, stderr_file, metadata_file)
+  end
+
+  # Saves the compiled box (ownership and modes preserved) so every run starts from it.
+  def take_snapshot
+    `sudo tar -C #{boxdir} -cpf #{snapshot_file} .`
+  end
+
+  # Puts the box back exactly as it was right after compilation, so runs
+  # cannot leave files behind for the next test case.
+  def restore_snapshot
+    # tmp only exists after a box's first run, so it may be missing in a fresh box.
+    `sudo find #{boxdir} -mindepth 1 -delete; [ -d #{tmpdir} ] && sudo find #{tmpdir} -mindepth 1 -delete`
+    `sudo tar -C #{boxdir} -xpf #{snapshot_file} --same-owner`
+    raise "Restoring sandbox #{box_id} from snapshot failed." unless $?.success?
+  end
+
   def cleanup(raise_exception = true)
-    fix_permissions
-    `sudo rm -rf #{boxdir}/* #{tmpdir}/*`
-    [stdin_file, stdout_file, stderr_file, metadata_file].each do |f|
-      `sudo rm -rf #{f}`
-    end
+    return if workdir.blank?
+    `sudo find #{boxdir} #{tmpdir} -mindepth 1 -delete; sudo rm -rf #{stdin_file} #{stdout_file} #{stderr_file} #{metadata_file} #{snapshot_file}`
     `isolate #{cgroups} -b #{box_id} --cleanup`
     raise "Cleanup of sandbox #{box_id} failed." if raise_exception && Dir.exists?(workdir)
   end
 
   def reset_metadata_file
     `sudo rm -rf #{metadata_file}`
-    initialize_file(metadata_file)
+    initialize_files(metadata_file)
   end
 
-  def fix_permissions
-    `sudo chown -R $(whoami): #{boxdir}`
+  # Everything that can change what compilation produces. nil when caching is off.
+  def compile_cache_key
+    return nil unless Config::ENABLE_COMPILE_CACHE
+
+    Digest::SHA256.hexdigest([
+      ENV["JUDGE0_VERSION"],
+      @leader.language_id,
+      @leader[:source_code].to_s,
+      Digest::SHA256.hexdigest(@leader.additional_files.to_s),
+      @leader.compiler_options.to_s,
+      cgroups,
+      @leader.enable_per_process_and_thread_time_limit,
+      @leader.enable_per_process_and_thread_memory_limit
+    ].to_json)
   end
 
-  def call_callback
-    return unless submission.callback_url.present?
+  # Cache entry: <key>.json ({failed, compile_output}) plus <key>.tar (compiled box) on success.
+  # Returns { failed:, compile_output:, snapshot: } or nil.
+  def compile_cache_lookup(key)
+    return nil unless key
+
+    meta_path = cache_path(key, "json")
+    return nil unless File.exist?(meta_path)
+    return nil if Time.now - File.mtime(meta_path) > Config::COMPILE_CACHE_TTL
+
+    meta = JSON.parse(File.read(meta_path))
+    entry = { failed: meta["failed"] == true, compile_output: meta["compile_output"] }
+    unless entry[:failed]
+      entry[:snapshot] = cache_path(key, "tar")
+      return nil unless File.exist?(entry[:snapshot])
+    end
+    entry
+  rescue StandardError
+    nil
+  end
+
+  # The .json is written last, so a reader never sees it without its .tar.
+  def compile_cache_store(key, compile_output, failed:)
+    return unless key
+    return if !failed && !File.exist?(snapshot_file)
+
+    unless failed
+      tar = cache_path(key, "tar")
+      tmp_tar = "#{tar}.#{Process.pid}.tmp"
+      `sudo cp #{snapshot_file} #{tmp_tar} && sudo chmod 644 #{tmp_tar} && mv -f #{tmp_tar} #{tar}`
+      return unless $?.success?
+    end
+
+    meta = cache_path(key, "json")
+    tmp_meta = "#{meta}.#{Process.pid}.tmp"
+    File.write(tmp_meta, { failed: failed, compile_output: compile_output }.to_json)
+    File.rename(tmp_meta, meta)
+    prune_compile_cache
+  rescue StandardError
+  end
+
+  def cache_path(key, ext)
+    FileUtils.mkdir_p(Config::COMPILE_CACHE_DIR)
+    File.join(Config::COMPILE_CACHE_DIR, "#{key}.#{ext}")
+  end
+
+  # shortcut: scans the cache dir on every store, fine for a few thousand entries; use an LRU index if it grows past that.
+  def prune_compile_cache
+    entries = Dir.glob(File.join(Config::COMPILE_CACHE_DIR, "*")).collect { |p| [p, File.mtime(p), File.size(p)] rescue nil }.compact
+    expired, live = entries.partition { |_, mtime, _| Time.now - mtime > Config::COMPILE_CACHE_TTL }
+    expired.each { |p, _, _| File.delete(p) rescue nil }
+
+    total = live.sum { |_, _, size| size }
+    limit = Config::COMPILE_CACHE_MAX_MB * 1024 * 1024
+    live.sort_by { |_, mtime, _| mtime }.each do |p, _, size|
+      break if total <= limit
+      File.delete(p) rescue nil
+      total -= size
+    end
+  end
+
+  def call_callback(s)
+    return unless s.callback_url.present?
 
     serialized_submission = ActiveModelSerializers::SerializableResource.new(
-      submission,
+      s,
       {
         serializer: SubmissionSerializer,
         base64_encoded: true,
@@ -325,7 +528,7 @@ class IsolateJob < ApplicationJob
     Config::CALLBACKS_MAX_TRIES.times do
       begin
         response = HTTParty.put(
-          submission.callback_url,
+          s.callback_url,
           body: serialized_submission,
           headers: {
             "Content-Type" => "application/json"
@@ -337,6 +540,18 @@ class IsolateJob < ApplicationJob
       end
     end
   rescue Exception => e
+  end
+
+  # Per-process mode limits address space (-m); cgroup mode limits real memory (--cg-mem).
+  # ISOLATE_DISABLE_ADDRESS_SPACE_LIMIT drops -m for local hosts without cgroup v1, where
+  # Node and the JVM cannot start under a small address-space limit. Never set it in production.
+  def memory_limit_flag(per_process, limit_kb)
+    return "--cg-mem=#{limit_kb}" unless per_process
+    Config::ISOLATE_DISABLE_ADDRESS_SPACE_LIMIT ? "" : "-m #{limit_kb}"
+  end
+
+  def log(action, command)
+    Rails.logger.debug { "[#{DateTime.now}] #{action} submission #{submission.token} (#{submission.id}): #{command.gsub(/\s+/, " ")}" }
   end
 
   def get_metadata

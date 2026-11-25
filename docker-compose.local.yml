@@ -1,0 +1,39 @@
+# Local test stack for the lean fork: API + workers + Redis, no database.
+#
+#   docker build -f Dockerfile.lean -t judge0-lean:1.13.1 .
+#   docker compose -f docker-compose.local.yml up -d
+#   API: http://localhost:2358  (header X-Auth-Token: local-dev-token)
+#
+# Workers use isolate 2 with cgroup v2 (as on EKS AL2023 nodes): privileged with a private
+# cgroup namespace, so isolate's boxes live inside the worker container's own cgroup.
+# Memory, CPU time and process limits are enforced exactly as in production.
+
+x-judge0-env: &judge0-env
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  AUTHN_TOKEN: local-dev-token
+  COUNT: "4"
+  SUBMISSION_TTL_SECONDS: "3600"
+
+services:
+  server:
+    image: judge0-lean:1.13.1
+    environment: *judge0-env
+    ports:
+      - "2358:2358"
+    depends_on: [redis]
+    restart: unless-stopped
+
+  worker:
+    image: judge0-lean:1.13.1
+    command: ["./scripts/workers"]
+    environment: *judge0-env
+    privileged: true
+    cgroup: private
+    depends_on: [redis]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2.4
+    command: ["redis-server", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
+    restart: unless-stopped

@@ -43,6 +43,21 @@ module Config
   ENABLE_NETWORK = ENV["ENABLE_NETWORK"] == "true"
   DISABLE_IMPLICIT_BASE64_ENCODING = ENV["DISABLE_IMPLICIT_BASE64_ENCODING"] == "true"
 
+  # Lean fork options (all on by default, set to "false" to get stock Judge0 behaviour).
+  # Batch items sharing the same code/files are executed in one job that compiles once.
+  ENABLE_BATCH_COMPILE_ONCE = ENV["ENABLE_BATCH_COMPILE_ONCE"] != "false"
+  # fields=* returns only the fields clients actually read (no source/zip echo).
+  SLIM_UNIVERSAL_FIELDS = ENV["SLIM_UNIVERSAL_FIELDS"] != "false"
+  # Worker-local cache of compiled sandboxes, keyed by a hash of everything that affects compilation.
+  ENABLE_COMPILE_CACHE = ENV["ENABLE_COMPILE_CACHE"] != "false"
+  COMPILE_CACHE_DIR = ENV["COMPILE_CACHE_DIR"].presence || "/tmp/judge0-compile-cache"
+  COMPILE_CACHE_TTL = (ENV["COMPILE_CACHE_TTL"].presence || 600).to_i
+  COMPILE_CACHE_MAX_MB = (ENV["COMPILE_CACHE_MAX_MB"].presence || 512).to_i
+  # Sandboxes one batch job may run at once after compiling once (1 = sequential).
+  BATCH_RUN_CONCURRENCY = (ENV["BATCH_RUN_CONCURRENCY"].presence || 5).to_i
+  # Local development only (no cgroup v1): run without isolate's address-space limit.
+  ISOLATE_DISABLE_ADDRESS_SPACE_LIMIT = ENV["ISOLATE_DISABLE_ADDRESS_SPACE_LIMIT"] == "true"
+
   def self.config_info
     @@default_confg ||= {
       "maintenance_mode": MAINTENANCE_MODE,
