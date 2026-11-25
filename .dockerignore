@@ -5,6 +5,8 @@ Dockerfile*
 docker-compose*
 docs/maintainers/
 graphify-out/
+ops/
+k8s/
 judge0.conf
 log/*
 scripts/dev/
