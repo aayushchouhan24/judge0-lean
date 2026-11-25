@@ -66,10 +66,14 @@ curl -s -X POST "http://localhost:2358/submissions?base64_encoded=true&wait=true
 
 ## Kubernetes
 
-[`k8s/`](k8s/) deploys the API (2 pods), Redis (1) and auto-scaling workers on EKS, with an
-HTTPS Ingress. Workers run privileged and delegate part of their own cgroup to isolate, so
-student code is capped by the pod's CPU and memory limits. See [`k8s/README.md`](k8s/README.md)
-for deploy and event-scaling commands.
+Run the API (2 pods) and Redis (1) as plain Deployments, and workers as a privileged
+Deployment (`command: ["./scripts/workers"]`, no host mounts needed). Workers delegate part
+of their own cgroup to isolate, so student code is capped by the pod's CPU and memory limits
+and is visible to a CPU-based HorizontalPodAutoscaler. Probe `/healthz`. Run Redis with
+`maxmemory-policy noeviction`.
+
+[`ops/`](ops/) has scripts to build, push, deploy, roll back, warm up for events, rotate
+secrets and smoke-test an endpoint.
 
 ## Configuration
 

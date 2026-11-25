@@ -7,3 +7,7 @@ tmp/*
 coverage/
 srv/
 environment
+
+# Deployment manifests and local ops config stay out of git
+/k8s/
+/ops/config.ps1
