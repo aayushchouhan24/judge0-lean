@@ -30,6 +30,8 @@ FROM buildpack-deps:buster AS production
 
 # UTF-8 locale, as in the stock image: Ruby reads ENV with it, and isolate passes LANG/LC_ALL to programs.
 ENV LANG=C.UTF-8 LANGUAGE=C.UTF-8 LC_ALL=C.UTF-8
+# Only Multi-file program (89) works with the toolchains in this image.
+ENV ENABLED_LANGUAGE_IDS=89
 
 ENV JUDGE0_HOMEPAGE "https://judge0.com"
 LABEL homepage=$JUDGE0_HOMEPAGE
