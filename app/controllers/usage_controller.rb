@@ -13,7 +13,7 @@ class UsageController < ApplicationController
     end
     hours = params[:hours].to_i
     hours = 24 unless hours.between?(1, 24 * 90)
-    render json: Usage.stats(hours)
+    render json: Usage.stats(hours, errors_only: params[:logs] == "errors")
   rescue StandardError => e
     render json: { error: "#{e.class}: #{e.message}" }, status: :service_unavailable
   end

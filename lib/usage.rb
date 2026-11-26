@@ -8,9 +8,7 @@ require "mongo"
 # delays or fails a request or a job.
 module Usage
   RETENTION_DAYS = (ENV["USAGE_RETENTION_DAYS"].presence || 180).to_i
-  # Allocated compute price used for cost estimates (default: c6a.2xlarge spot / 8 vCPU).
-  USD_PER_VCPU_HOUR = (ENV["USAGE_USD_PER_VCPU_HOUR"].presence || 0.0153).to_f
-  FIXED_MONTHLY_USD = (ENV["USAGE_FIXED_MONTHLY_USD"].presence || 2).to_f
+  SYSTEM_ERRORS = ["Internal Error", "Exec Format Error"].freeze
   FLUSH_SECONDS = 2
   MAX_BUFFER = 20_000
   COLLECTIONS = %w[requests executions].freeze
@@ -73,15 +71,16 @@ module Usage
         queue_ms: queue_ms,
         run_ms: run_ms,
         archive_bytes: leader.additional_files.to_s.bytesize,
-        cost_usd: run_ms ? (run_ms / 3_600_000.0 * USD_PER_VCPU_HOUR).round(8) : 0,
-        worker: ENV["HOSTNAME"]
-      })
+        worker: ENV["HOSTNAME"],
+        # Sandbox failures carry isolate's message; wrong answers and student errors are not system errors.
+        error: submissions.find { |s| SYSTEM_ERRORS.include?(s.status.try(:name)) }.try(:message).to_s[0, 300].presence
+      }.compact)
     rescue StandardError => e
       warn_once("record_execution", e)
     end
 
     # Aggregates for the dashboard over the last `hours`.
-    def stats(hours)
+    def stats(hours, errors_only: false)
       since = Time.now.utc - hours * 3600
       unit = hours <= 6 ? "minute" : (hours <= 72 ? "hour" : "day")
       bucket = { "$dateTrunc" => { date: "$ts", unit: unit, binSize: unit == "minute" ? 5 : 1 } }
@@ -109,7 +108,7 @@ module Usage
         { "$match" => { ts: { "$gte" => since } } },
         { "$facet" => {
           totals: [{ "$group" => { _id: nil, batches: { "$sum" => 1 }, tests: { "$sum" => "$tests" }, cpu_s: { "$sum" => "$cpu_s" },
-                                   cost_usd: { "$sum" => "$cost_usd" }, cache_hits: { "$sum" => { "$cond" => ["$cache_hit", 1, 0] } },
+                                   cache_hits: { "$sum" => { "$cond" => ["$cache_hit", 1, 0] } },
                                    queue: pct.("$queue_ms"), run: pct.("$run_ms") } }, { "$project" => { _id: 0 } }],
           series: [{ "$group" => { _id: bucket, batches: { "$sum" => 1 }, tests: { "$sum" => "$tests" } } }, { "$sort" => { _id: 1 } }],
           languages: [{ "$group" => { _id: "$language", batches: { "$sum" => 1 }, tests: { "$sum" => "$tests" }, cpu_s: { "$sum" => "$cpu_s" },
@@ -119,18 +118,27 @@ module Usage
         } }
       ]).first
 
-      month_factor = 720.0 / hours
       {
         window_hours: hours, bucket: unit, generated_at: Time.now.utc,
         requests: req, executions: exe,
-        cost: {
-          compute_usd: exe["totals"].first.to_h["cost_usd"].to_f,
-          projected_month_compute_usd: (exe["totals"].first.to_h["cost_usd"].to_f * month_factor).round(4),
-          fixed_month_usd: FIXED_MONTHLY_USD,
-          usd_per_vcpu_hour: USD_PER_VCPU_HOUR
-        },
+        logs: logs(since, errors_only),
         queue: (Resque.size(ENV["JUDGE0_VERSION"]) rescue nil)
       }
+    end
+
+    # Most recent events, newest first; errors_only keeps failed requests and sandbox failures.
+    def logs(since, errors_only, limit = 100)
+      req_filter = { ts: { "$gte" => since } }
+      exe_filter = { ts: { "$gte" => since } }
+      if errors_only
+        req_filter[:status] = { "$gte" => 400 }
+        exe_filter[:error] = { "$exists" => true }
+      end
+      reqs = db["requests"].find(req_filter, projection: { _id: 0, ts: 1, method: 1, endpoint: 1, status: 1, duration_ms: 1, ip: 1, error: 1, batch_size: 1 })
+                           .sort(ts: -1).limit(limit).collect { |d| d.to_h.merge("kind" => "request") }
+      exes = db["executions"].find(exe_filter, projection: { _id: 0, ts: 1, language: 1, tests: 1, verdict: 1, run_ms: 1, queue_ms: 1, error: 1, cache_hit: 1 })
+                             .sort(ts: -1).limit(limit).collect { |d| d.to_h.merge("kind" => "execution") }
+      (reqs + exes).sort_by { |d| -d["ts"].to_f }.first(limit)
     end
 
     private
@@ -163,22 +171,44 @@ module Usage
 
     def call(env)
       return @app.call(env) unless Usage.enabled? && !SKIP.include?(env["PATH_INFO"])
+      # Captured first: Rails rewrites PATH_INFO to /404 or /500 when it renders an error page.
+      env["usage.path"] = env["PATH_INFO"].to_s
+      env["usage.method"] = env["REQUEST_METHOD"]
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      status, headers, body = @app.call(env)
-      duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round(1)
-      [status, headers, CountingBody.new(body) { |bytes_out| Usage.push("requests", document(env, status, duration_ms, bytes_out)) }]
+      elapsed = -> { ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round(1) }
+      begin
+        status, headers, body = @app.call(env)
+      rescue Exception => e
+        # The app crashed before producing a response: log it as a 500, then let Rails render it.
+        Usage.push("requests", document(env, 500, elapsed.call, 0, "#{e.class}: #{e.message}"[0, 300]))
+        raise
+      end
+      duration_ms = elapsed.call
+      body = CountingBody.new(body, capture: status.to_i >= 400) do |bytes_out, head|
+        Usage.push("requests", document(env, status, duration_ms, bytes_out, error_text(head, status)))
+      end
+      [status, headers, body]
     end
 
     private
 
-    def document(env, status, duration_ms, bytes_out)
+    # Failed responses keep their error message ({"error": ...} or the start of the body).
+    def error_text(head, status)
+      return nil if head.nil?
+      return Rack::Utils::HTTP_STATUS_CODES[status.to_i] if head.blank?
+      parsed = JSON.parse(head) rescue nil
+      text = parsed.is_a?(Hash) ? (parsed["error"] || parsed.to_json) : head
+      text.to_s[0, 300]
+    end
+
+    def document(env, status, duration_ms, bytes_out, error = nil)
       req = Rack::Request.new(env)
       params = env["action_dispatch.request.request_parameters"] || {}
       referer = env["HTTP_REFERER"].to_s
       {
         ts: Time.now.utc,
-        method: env["REQUEST_METHOD"],
-        endpoint: env["PATH_INFO"].to_s.gsub(TOKEN_PATH, "/submissions/:token"),
+        method: env["usage.method"] || env["REQUEST_METHOD"],
+        endpoint: (env["usage.path"] || env["PATH_INFO"]).to_s.gsub(TOKEN_PATH, "/submissions/:token"),
         status: status.to_i,
         duration_ms: duration_ms,
         bytes_in: env["CONTENT_LENGTH"].to_i,
@@ -191,22 +221,27 @@ module Usage
         tokens: req.params["tokens"].to_s.split(",").size.nonzero?,
         base64: req.params["base64_encoded"],
         wait: req.params["wait"],
-        fields: req.params["fields"]
+        fields: req.params["fields"],
+        error: error
       }.compact
     end
   end
 
   # Counts response bytes as the server writes them, then reports on close.
   class CountingBody
-    def initialize(body, &on_close)
+    CAPTURE_BYTES = 1024
+
+    def initialize(body, capture: false, &on_close)
       @body = body
       @bytes = 0
+      @head = capture ? +"" : nil
       @on_close = on_close
     end
 
     def each
       @body.each do |chunk|
         @bytes += chunk.bytesize
+        @head << chunk.byteslice(0, CAPTURE_BYTES - @head.bytesize) if @head && @head.bytesize < CAPTURE_BYTES
         yield chunk
       end
     end
@@ -214,7 +249,7 @@ module Usage
     def close
       @body.close if @body.respond_to?(:close)
     ensure
-      @on_close.call(@bytes)
+      @on_close.call(@bytes, @head && @head.force_encoding(Encoding::UTF_8).scrub)
     end
   end
 end

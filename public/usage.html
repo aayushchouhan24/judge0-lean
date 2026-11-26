@@ -123,6 +123,8 @@
     <a href="#languages"><svg viewBox="0 0 24 24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>Languages</a>
     <a href="#clients"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0 1 12 0v1"/><path d="M16 3.5a4 4 0 0 1 0 7.5"/><path d="M22 21v-1a6 6 0 0 0-4-5.6"/></svg>Clients</a>
     <a href="#endpoints"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Endpoints</a>
+    <div class="group">Monitoring</div>
+    <a href="#logs"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Logs</a>
   </nav>
   <div class="side-foot">
     <label for="token">API token (X-Auth-Token)</label>
@@ -149,10 +151,8 @@
     <div class="banner" id="msg" hidden></div>
 
     <section class="card" id="overview">
-      <div class="card-head"><h2>Cost</h2><span class="hint" id="rate"></span></div>
+      <div class="card-head"><h2>Activity</h2><span class="hint">in the selected window</span></div>
       <div class="stats">
-        <div class="stat"><span class="k">Projected this month</span><span class="v" id="t_month">–</span><span class="s" id="t_monthd"></span></div>
-        <div class="stat"><span class="k">Compute used in window</span><span class="v" id="t_cost">–</span><span class="s">sandbox time × vCPU price</span></div>
         <div class="stat"><span class="k">Batches judged</span><span class="v" id="t_bat">–</span><span class="s" id="t_tests"></span></div>
         <div class="stat"><span class="k">Requests</span><span class="v" id="t_req">–</span><span class="s" id="t_rps"></span></div>
       </div>
@@ -209,6 +209,15 @@
         <thead><tr><th>Method</th><th>Endpoint</th><th class="r">Requests</th><th class="r">Bandwidth</th><th class="r">p50</th><th class="r">p95</th></tr></thead>
         <tbody id="b_end"></tbody></table></div>
     </section>
+
+    <section class="card" id="logs">
+      <div class="card-head"><h2>Logs</h2>
+        <label class="hint" style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="errorsOnly"> Errors only</label>
+      </div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Time</th><th>Kind</th><th>Status</th><th>What</th><th class="r">Duration</th><th>Client</th><th>Detail</th></tr></thead>
+        <tbody id="b_logs"></tbody></table></div>
+    </section>
   </div>
 </main>
 
@@ -219,7 +228,6 @@ const num = (n) => (n ?? 0).toLocaleString();
 const bytes = (b) => { b = b || 0; const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return `${b.toFixed(i ? 1 : 0)} ${u[i]}`; };
 const ms = (v) => v == null ? '–' : v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`;
 const pair = (p) => p && p.length ? `${ms(p[0])} / ${ms(p[1])}` : '–';
-const usd = (v) => v == null ? '–' : v === 0 ? '$0' : v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 const bar = (pct, cls = '') => `<div class="bar"><div class="track"><div class="fill ${cls}" style="width:${Math.max(0, Math.min(100, pct))}%"></div></div><span>${Math.round(pct)}%</span></div>`;
@@ -259,17 +267,13 @@ async function load() {
   const hours = Number($('win').value);
   let data;
   try {
-    const r = await fetch(`usage/stats?hours=${hours}`, { headers: { 'X-Auth-Token': token } });
+    const r = await fetch(`usage/stats?hours=${hours}${$('errorsOnly').checked ? '&logs=errors' : ''}`, { headers: { 'X-Auth-Token': token } });
     data = await r.json();
     if (!r.ok) throw new Error(r.status === 401 ? 'wrong API token' : data.error || r.statusText);
   } catch (e) { setState(e.message, 'bad'); $('msg').hidden = false; $('msg').textContent = `Could not load usage: ${e.message}`; return; }
   $('msg').hidden = true; lastOk = Date.now(); ago();
 
   const rt = (data.requests.totals || [])[0] || {}, et = (data.executions.totals || [])[0] || {};
-  $('rate').textContent = `estimate at $${data.cost.usd_per_vcpu_hour} per vCPU-hour`;
-  $('t_month').textContent = usd(data.cost.projected_month_compute_usd + data.cost.fixed_month_usd);
-  $('t_monthd').textContent = `compute ${usd(data.cost.projected_month_compute_usd)} + fixed ${usd(data.cost.fixed_month_usd)}`;
-  $('t_cost').textContent = usd(data.cost.compute_usd);
   $('t_bat').textContent = num(et.batches); $('t_tests').textContent = `${num(et.tests)} test cases`;
   $('t_req').textContent = num(rt.requests); $('t_rps').textContent = `${((rt.requests || 0) / (hours * 60)).toFixed(2)} per minute`;
   $('t_bw').textContent = bytes((rt.bytes_in || 0) + (rt.bytes_out || 0)); $('t_bwio').textContent = `in ${bytes(rt.bytes_in)} · out ${bytes(rt.bytes_out)}`;
@@ -308,14 +312,27 @@ async function load() {
   $('b_cli').innerHTML = (data.requests.clients || []).map((c) => `<tr><td class="mono">${esc(c._id.ip)}</td><td>${esc(c._id.origin || '–')}</td><td class="r">${num(c.requests)}</td>
     <td class="r">${bytes(c.bytes)}</td><td>${esc(new Date(c.last_seen).toLocaleString())}</td><td class="ua" title="${esc(c._id.user_agent)}">${esc(c._id.user_agent || '–')}</td></tr>`).join('')
     || '<tr><td colspan="6" class="empty">No requests in this window.</td></tr>';
-  $('b_end').innerHTML = (data.requests.endpoints || []).map((e) => `<tr><td><span class="badge">${esc(e._id.method)}</span></td><td class="mono">${esc(e._id.endpoint)}</td>
+  $('b_logs').innerHTML = (data.logs || []).map((l) => {
+    const t = new Date(l.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    if (l.kind === 'request') {
+      const cls = l.status >= 500 ? 'bad' : l.status >= 400 ? 'warn' : 'good';
+      return `<tr><td>${esc(t)}</td><td>request</td><td><span class="badge ${cls}">${esc(l.status)}</span></td>
+        <td class="mono">${esc(l.method)} ${esc(l.endpoint)}${l.batch_size ? ` <span style="color:var(--muted)">×${l.batch_size}</span>` : ''}</td>
+        <td class="r">${ms(l.duration_ms)}</td><td class="mono">${esc(l.ip || '–')}</td><td style="white-space:normal;color:${l.error ? 'var(--bad)' : 'var(--muted)'}">${esc(l.error || '')}</td></tr>`;
+    }
+    const cls = l.error ? 'bad' : l.verdict === 'Accepted' ? 'good' : 'warn';
+    return `<tr><td>${esc(t)}</td><td>execution</td><td><span class="badge ${cls}">${esc(l.verdict)}</span></td>
+      <td>${esc(l.language)} <span style="color:var(--muted)">${l.tests} tests${l.cache_hit ? ' · cached' : ''}</span></td>
+      <td class="r">${ms(l.run_ms)}</td><td style="color:var(--muted)">queue ${ms(l.queue_ms)}</td><td style="white-space:normal;color:var(--bad)">${esc(l.error || '')}</td></tr>`;
+  }).join('') || `<tr><td colspan="7" class="empty">${$('errorsOnly').checked ? 'No errors in this window.' : 'No events in this window.'}</td></tr>`;
+  $('b_end').innerHTML =(data.requests.endpoints || []).map((e) => `<tr><td><span class="badge">${esc(e._id.method)}</span></td><td class="mono">${esc(e._id.endpoint)}</td>
     <td class="r">${num(e.requests)}</td><td class="r">${bytes(e.bytes)}</td><td class="r">${ms((e.latency || [])[0])}</td><td class="r">${ms((e.latency || [])[1])}</td></tr>`).join('')
     || '<tr><td colspan="6" class="empty">No requests in this window.</td></tr>';
 }
 
 // Sidebar: highlight the section in view and mirror it in the page title.
 const links = [...document.querySelectorAll('nav a')];
-const names = { overview: 'Overview', traffic: 'Traffic', executions: 'Executions', languages: 'Languages', clients: 'Clients', endpoints: 'Endpoints' };
+const names = { overview: 'Overview', traffic: 'Traffic', executions: 'Executions', languages: 'Languages', clients: 'Clients', endpoints: 'Endpoints', logs: 'Logs' };
 const io = new IntersectionObserver((entries) => entries.forEach((e) => { if (!e.isIntersecting) return;
   links.forEach((l) => l.classList.toggle('active', l.hash === '#' + e.target.id)); $('title').textContent = names[e.target.id]; }), { rootMargin: '-90px 0px -60% 0px' });
 Object.keys(names).forEach((id) => { const el = $(id); if (el) io.observe(el); });
@@ -324,6 +341,8 @@ $('save').onclick = () => { token = $('token').value.trim(); store.set('judge0_u
 $('token').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('save').click(); });
 $('win').onchange = () => { store.set('judge0_usage_window', $('win').value); load(); };
 $('refresh').onclick = load;
+$('errorsOnly').checked = store.get('judge0_usage_errors') === '1';
+$('errorsOnly').onchange = () => { store.set('judge0_usage_errors', $('errorsOnly').checked ? '1' : '0'); load(); };
 $('theme').onclick = () => {
   const dark = matchMedia('(prefers-color-scheme: dark)').matches;
   const cur = document.documentElement.dataset.theme || (dark ? 'dark' : 'light');
