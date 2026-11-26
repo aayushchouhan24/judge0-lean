@@ -3,106 +3,213 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>judge0-lean usage</title>
+<title>Judge0 Usage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
+  /* Layout: fixed sidebar navigation + scrolling content of bordered cards, like a cost console. */
   :root {
-    --bg: #f4f6f8; --panel: #ffffff; --text: #17202b; --muted: #5f6b7a; --line: #dfe4ea;
-    --a: #2f6fdb; --b: #0f9d76; --c: #d9822b; --bad: #c9372c; --chip: #eef2f6;
+    --bg: #fafafa; --sidebar: #f4f4f5; --card: #ffffff; --card-2: #f8f8f9; --text: #09090b; --muted: #71717a;
+    --line: #e4e4e7; --hover: #ececee; --accent: #2563eb; --good: #16a34a; --warn: #d97706; --bad: #dc2626; --c2: #0d9488; --c3: #ea580c;
+    --font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #0e1218; --panel: #151b23; --text: #e5eaf0; --muted: #8f9bab; --line: #263040;
-            --a: #6f9bff; --b: #3fd0a3; --c: #f0a65a; --bad: #f17a6f; --chip: #1c2430; color-scheme: dark; }
+    :root:not([data-theme="light"]) {
+      --bg: #0a0a0a; --sidebar: #111111; --card: #111111; --card-2: #161616; --text: #fafafa; --muted: #a1a1aa;
+      --line: #262626; --hover: #1c1c1c; --accent: #60a5fa; --good: #4ade80; --warn: #fbbf24; --bad: #f87171; --c2: #2dd4bf; --c3: #fb923c;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0a0a; --sidebar: #111111; --card: #111111; --card-2: #161616; --text: #fafafa; --muted: #a1a1aa;
+    --line: #262626; --hover: #1c1c1c; --accent: #60a5fa; --good: #4ade80; --warn: #fbbf24; --bad: #f87171; --c2: #2dd4bf; --c3: #fb923c;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px max(16px, 3vw); background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
-  header h1 { font-size: 20px; margin: 0; }
-  header .spacer { flex: 1; }
-  select, input, button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; }
-  button { cursor: pointer; } button:hover { border-color: var(--a); }
-  .pill { font-size: 13px; padding: 4px 12px; border-radius: 999px; background: var(--chip); color: var(--muted); }
-  .pill.ok { color: var(--b); } .pill.bad { color: var(--bad); }
-  main { padding: 18px max(16px, 3vw) 48px; display: grid; gap: 18px; max-width: 1500px; margin: 0 auto; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 6px 0 0; }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 12px; }
-  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; gap: 4px; }
-  .tile .k { font-size: 13px; color: var(--muted); }
-  .tile .v { font: 600 24px/1.1 ui-monospace, "Cascadia Code", Consolas, monospace; font-variant-numeric: tabular-nums; }
-  .tile .s { font-size: 12.5px; color: var(--muted); }
-  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
-  .panel h3 { margin: 0 0 10px; font-size: 16px; }
-  .chartbox { position: relative; height: 240px; }
+  body { min-height: 100vh; margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+  a { color: inherit; }
+  button, select, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* sidebar */
+  aside { background: var(--sidebar); border-right: 1px solid var(--line); height: 100vh; position: sticky; top: 0; display: flex; flex-direction: column; padding: 20px 14px; gap: 22px; }
+  .brand { display: flex; gap: 12px; align-items: center; padding: 0 8px; }
+  .logo { width: 38px; height: 38px; border-radius: 9px; background: var(--text); color: var(--bg); display: grid; place-items: center; font: 700 15px var(--mono); }
+  .brand b { display: block; font-size: 15px; }
+  .brand span { font-size: 12.5px; color: var(--muted); }
+  nav { display: grid; gap: 2px; }
+  nav .group { font-size: 12.5px; color: var(--muted); padding: 10px 10px 6px; }
+  nav a { display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 8px; text-decoration: none; font-size: 14.5px; color: var(--text); opacity: .85; }
+  nav a:hover { background: var(--hover); opacity: 1; }
+  nav a.active { background: var(--hover); opacity: 1; font-weight: 500; }
+  nav svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .side-foot { margin-top: auto; display: grid; gap: 10px; padding: 0 6px; }
+  .side-foot label { font-size: 12.5px; color: var(--muted); }
+  .tokenrow { display: grid; gap: 8px; }
+  .tokenrow .btn { justify-content: center; }
+  .tokenrow input { width: 100%; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  .btn { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
+  .btn:hover { background: var(--hover); }
+  .btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .ghost { background: none; border: 0; padding: 6px 4px; cursor: pointer; display: inline-flex; gap: 8px; align-items: center; color: var(--text); opacity: .85; }
+  .ghost:hover { opacity: 1; }
+
+  /* main */
+  main { min-width: 0; }
+  .top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px 28px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 3; }
+  .top h1 { font-size: 20px; font-weight: 600; margin: 0; }
+  .top .spacer { flex: 1; }
+  .top .stamp { color: var(--muted); font-size: 13px; }
+  .top select { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; min-width: 150px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 6px; }
+  .dot.live { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); }
+  .dot.bad { background: var(--bad); }
+  .content { padding: 24px 28px 64px; display: grid; gap: 22px; max-width: 1400px; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; scroll-margin-top: 80px; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  .card-head h2 { font-size: 16px; font-weight: 600; margin: 0; }
+  .card-head .hint { color: var(--muted); font-size: 13px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .stat { background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 4px; }
+  .stat .k { font-size: 13px; color: var(--muted); }
+  .stat .v { font-size: 26px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+  .stat .s { font-size: 12.5px; color: var(--muted); }
+  .banner { border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 10px; padding: 12px 16px; background: var(--card-2); }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 22px; }
+  .chartbox { position: relative; height: 260px; }
+
   .tablewrap { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th { font-size: 12.5px; color: var(--muted); font-weight: 600; }
-  td.n { text-align: right; font-family: ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
-  td.ua { max-width: 340px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
-  .msg { padding: 14px 16px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-size: 13px; color: var(--muted); font-weight: 500; }
+  tbody tr:hover td { background: var(--card-2); }
+  td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
+  td.mono { font-family: var(--mono); font-size: 13px; }
+  td.ua { max-width: 360px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+  .bar { display: flex; align-items: center; gap: 10px; min-width: 150px; }
+  .bar .track { flex: 1; height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 99px; background: var(--good); }
+  .bar .fill.warn { background: var(--warn); } .bar .fill.bad { background: var(--bad); }
+  .bar span { font-size: 12.5px; color: var(--muted); min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); }
+  .badge.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+  .badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .badge.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+  .empty { color: var(--muted); padding: 14px 12px; }
+
+  @media (max-width: 900px) {
+    body { grid-template-columns: 1fr; }
+    aside { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--line); }
+    nav { display: flex; flex-wrap: wrap; } nav .group { display: none; }
+    .side-foot { margin: 0; width: 100%; }
+    .top, .content { padding-left: 16px; padding-right: 16px; }
+    .two { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>judge0-lean usage</h1>
-  <span id="state" class="pill">connecting…</span>
-  <span class="spacer"></span>
-  <label for="win" class="pill">Window</label>
-  <select id="win">
-    <option value="1">Last hour</option>
-    <option value="24" selected>Last 24 hours</option>
-    <option value="168">Last 7 days</option>
-    <option value="720">Last 30 days</option>
-  </select>
-  <input id="token" type="password" placeholder="API token (X-Auth-Token)" autocomplete="off" style="width:230px">
-  <button id="save">Load</button>
-</header>
+<aside>
+  <div class="brand"><div class="logo">J0</div><div><b>Judge0 Usage</b><span>judge0-lean</span></div></div>
+  <nav>
+    <div class="group">Usage</div>
+    <a href="#overview" class="active"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></svg>Overview</a>
+    <a href="#traffic"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Traffic</a>
+    <a href="#executions"><svg viewBox="0 0 24 24"><rect x="3" y="12" width="4" height="9"/><rect x="10" y="7" width="4" height="14"/><rect x="17" y="3" width="4" height="18"/></svg>Executions</a>
+    <div class="group">Breakdown</div>
+    <a href="#languages"><svg viewBox="0 0 24 24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>Languages</a>
+    <a href="#clients"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0 1 12 0v1"/><path d="M16 3.5a4 4 0 0 1 0 7.5"/><path d="M22 21v-1a6 6 0 0 0-4-5.6"/></svg>Clients</a>
+    <a href="#endpoints"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Endpoints</a>
+  </nav>
+  <div class="side-foot">
+    <label for="token">API token (X-Auth-Token)</label>
+    <div class="tokenrow"><input id="token" type="password" autocomplete="off" placeholder="paste token"><button class="btn" id="save">Load</button></div>
+    <button class="ghost" id="theme"><svg viewBox="0 0 24 24" width="16" height="16" style="stroke:currentColor;fill:none;stroke-width:2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Theme</button>
+  </div>
+</aside>
 
 <main>
-  <div id="msg" class="msg" hidden></div>
-
-  <h2>Traffic</h2>
-  <div class="tiles">
-    <div class="tile"><span class="k">Requests</span><span class="v" id="t_req">–</span><span class="s" id="t_rps"></span></div>
-    <div class="tile"><span class="k">Bandwidth</span><span class="v" id="t_bw">–</span><span class="s" id="t_bwio"></span></div>
-    <div class="tile"><span class="k">Errors (4xx/5xx)</span><span class="v" id="t_err">–</span><span class="s" id="t_errp"></span></div>
-    <div class="tile"><span class="k">Latency p50 / p95</span><span class="v" id="t_lat">–</span><span class="s">API response time</span></div>
-    <div class="tile"><span class="k">Clients</span><span class="v" id="t_cli">–</span><span class="s">distinct IPs</span></div>
-    <div class="tile"><span class="k">Queue now</span><span class="v" id="t_q">–</span><span class="s">batches waiting</span></div>
+  <div class="top">
+    <h1 id="title">Overview</h1>
+    <span class="spacer"></span>
+    <span class="stamp"><span class="dot" id="dot"></span><span id="stamp">waiting for token</span></span>
+    <select id="win" aria-label="Time window">
+      <option value="1">Last hour</option>
+      <option value="24" selected>Last 24 hours</option>
+      <option value="168">Last 7 days</option>
+      <option value="720">Last 30 days</option>
+    </select>
+    <button class="btn" id="refresh"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Refresh</button>
   </div>
 
-  <h2>Execution and cost</h2>
-  <div class="tiles">
-    <div class="tile"><span class="k">Batches judged</span><span class="v" id="t_bat">–</span><span class="s" id="t_tests"></span></div>
-    <div class="tile"><span class="k">Compile cache hits</span><span class="v" id="t_cache">–</span><span class="s">compilations skipped</span></div>
-    <div class="tile"><span class="k">Queue wait p50 / p95</span><span class="v" id="t_qw">–</span><span class="s">before a worker starts</span></div>
-    <div class="tile"><span class="k">Batch time p50 / p95</span><span class="v" id="t_run">–</span><span class="s">compile + all tests</span></div>
-    <div class="tile"><span class="k">Compute used</span><span class="v" id="t_cost">–</span><span class="s" id="t_rate"></span></div>
-    <div class="tile"><span class="k">Projected month</span><span class="v" id="t_month">–</span><span class="s" id="t_monthd"></span></div>
+  <div class="content">
+    <div class="banner" id="msg" hidden></div>
+
+    <section class="card" id="overview">
+      <div class="card-head"><h2>Cost</h2><span class="hint" id="rate"></span></div>
+      <div class="stats">
+        <div class="stat"><span class="k">Projected this month</span><span class="v" id="t_month">–</span><span class="s" id="t_monthd"></span></div>
+        <div class="stat"><span class="k">Compute used in window</span><span class="v" id="t_cost">–</span><span class="s">sandbox time × vCPU price</span></div>
+        <div class="stat"><span class="k">Batches judged</span><span class="v" id="t_bat">–</span><span class="s" id="t_tests"></span></div>
+        <div class="stat"><span class="k">Requests</span><span class="v" id="t_req">–</span><span class="s" id="t_rps"></span></div>
+      </div>
+    </section>
+
+    <section class="card" id="traffic">
+      <div class="card-head"><h2>Traffic</h2><span class="hint">every API request</span></div>
+      <div class="stats" style="margin-bottom:18px">
+        <div class="stat"><span class="k">Bandwidth</span><span class="v" id="t_bw">–</span><span class="s" id="t_bwio"></span></div>
+        <div class="stat"><span class="k">Errors (4xx / 5xx)</span><span class="v" id="t_err">–</span><span class="s" id="t_errp"></span></div>
+        <div class="stat"><span class="k">Latency p50 / p95</span><span class="v" id="t_lat">–</span><span class="s">API response time</span></div>
+        <div class="stat"><span class="k">Clients</span><span class="v" id="t_cli">–</span><span class="s">distinct IPs</span></div>
+      </div>
+      <div class="chartbox"><canvas id="c_req"></canvas></div>
+    </section>
+
+    <section class="card" id="executions">
+      <div class="card-head"><h2>Executions</h2><span class="hint">one batch = one Run or Submit</span></div>
+      <div class="stats" style="margin-bottom:18px">
+        <div class="stat"><span class="k">Queue now</span><span class="v" id="t_q">–</span><span class="s">batches waiting</span></div>
+        <div class="stat"><span class="k">Queue wait p50 / p95</span><span class="v" id="t_qw">–</span><span class="s">before a worker starts</span></div>
+        <div class="stat"><span class="k">Batch time p50 / p95</span><span class="v" id="t_run">–</span><span class="s">compile + all test cases</span></div>
+        <div class="stat"><span class="k">Compile cache hits</span><span class="v" id="t_cache">–</span><span class="s">compilations skipped</span></div>
+      </div>
+      <div class="chartbox"><canvas id="c_exe"></canvas></div>
+    </section>
+
+    <div class="two">
+      <section class="card" id="languages">
+        <div class="card-head"><h2>Languages</h2><span class="hint">share of batches all accepted</span></div>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Language</th><th class="r">Batches</th><th class="r">Tests</th><th>All accepted</th><th class="r">CPU s</th><th class="r">p50</th><th class="r">p95</th></tr></thead>
+          <tbody id="b_lang"></tbody></table></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Verdicts and HTTP statuses</h2></div>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Verdict</th><th class="r">Batches</th><th>Share</th></tr></thead><tbody id="b_ver"></tbody></table></div>
+        <div class="tablewrap" style="margin-top:14px"><table>
+          <thead><tr><th>HTTP status</th><th class="r">Requests</th><th>Share</th></tr></thead><tbody id="b_st"></tbody></table></div>
+      </section>
+    </div>
+
+    <section class="card" id="clients">
+      <div class="card-head"><h2>Clients</h2><span class="hint">top 15 by requests</span></div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>IP</th><th>Origin</th><th class="r">Requests</th><th class="r">Bandwidth</th><th>Last seen</th><th>User agent</th></tr></thead>
+        <tbody id="b_cli"></tbody></table></div>
+    </section>
+
+    <section class="card" id="endpoints">
+      <div class="card-head"><h2>Endpoints</h2><span class="hint">top 15 by requests</span></div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Method</th><th>Endpoint</th><th class="r">Requests</th><th class="r">Bandwidth</th><th class="r">p50</th><th class="r">p95</th></tr></thead>
+        <tbody id="b_end"></tbody></table></div>
+    </section>
   </div>
-
-  <div class="grid2">
-    <div class="panel"><h3>Requests and bandwidth</h3><div class="chartbox"><canvas id="c_req"></canvas></div></div>
-    <div class="panel"><h3>Batches and test cases judged</h3><div class="chartbox"><canvas id="c_exe"></canvas></div></div>
-  </div>
-
-  <div class="grid2">
-    <div class="panel"><h3>Languages</h3><div class="tablewrap"><table>
-      <thead><tr><th>Language</th><th>Batches</th><th>Tests</th><th>All accepted</th><th>CPU s</th><th>Time p50</th><th>p95</th></tr></thead>
-      <tbody id="b_lang"></tbody></table></div></div>
-    <div class="panel"><h3>Verdicts and HTTP statuses</h3><div class="tablewrap"><table>
-      <thead><tr><th>Verdict</th><th>Batches</th><th></th><th>HTTP status</th><th>Requests</th></tr></thead>
-      <tbody id="b_ver"></tbody></table></div></div>
-  </div>
-
-  <div class="panel"><h3>Clients</h3><div class="tablewrap"><table>
-    <thead><tr><th>IP</th><th>Origin</th><th>Requests</th><th>Bandwidth</th><th>Last seen</th><th>User agent</th></tr></thead>
-    <tbody id="b_cli"></tbody></table></div></div>
-
-  <div class="panel"><h3>Endpoints</h3><div class="tablewrap"><table>
-    <thead><tr><th>Method</th><th>Endpoint</th><th>Requests</th><th>Bandwidth</th><th>p50</th><th>p95</th></tr></thead>
-    <tbody id="b_end"></tbody></table></div></div>
 </main>
 
 <script>
@@ -112,98 +219,120 @@ const num = (n) => (n ?? 0).toLocaleString();
 const bytes = (b) => { b = b || 0; const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return `${b.toFixed(i ? 1 : 0)} ${u[i]}`; };
 const ms = (v) => v == null ? '–' : v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`;
 const pair = (p) => p && p.length ? `${ms(p[0])} / ${ms(p[1])}` : '–';
-const usd = (v) => v == null ? '–' : `$${v < 1 ? v.toFixed(4) : v.toFixed(2)}`;
+const usd = (v) => v == null ? '–' : v === 0 ? '$0' : v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const bar = (pct, cls = '') => `<div class="bar"><div class="track"><div class="fill ${cls}" style="width:${Math.max(0, Math.min(100, pct))}%"></div></div><span>${Math.round(pct)}%</span></div>`;
 
-let token = ''; try { token = localStorage.getItem('judge0_usage_token') || ''; } catch {}
+let token = store.get('judge0_usage_token') || '';
+let lastOk = null;
 $('token').value = token;
-try { $('win').value = localStorage.getItem('judge0_usage_window') || '24'; } catch {}
+$('win').value = store.get('judge0_usage_window') || '24';
+const theme = store.get('judge0_usage_theme'); if (theme) document.documentElement.dataset.theme = theme;
 const charts = {};
 
-function chart(id, labels, sets, unitRight) {
+function chart(id, labels, sets, rightFmt) {
   const grid = css('--line'), tick = css('--muted');
   const data = { labels, datasets: sets };
-  if (charts[id]) { charts[id].data = data; charts[id].update('none'); return; }
+  if (charts[id]) { charts[id].destroy(); }
   charts[id] = new Chart($(id), {
-    type: 'bar', data,
+    data,
     options: {
       responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { labels: { color: tick } } },
+      plugins: { legend: { position: 'top', align: 'end', labels: { color: tick, boxWidth: 10, boxHeight: 10, usePointStyle: true } },
+                 tooltip: { backgroundColor: css('--card-2'), titleColor: css('--text'), bodyColor: css('--text'), borderColor: grid, borderWidth: 1 } },
       scales: {
-        x: { ticks: { color: tick, maxTicksLimit: 10 }, grid: { color: grid } },
-        y: { ticks: { color: tick }, grid: { color: grid }, beginAtZero: true },
-        y2: { position: 'right', ticks: { color: tick, callback: unitRight }, grid: { drawOnChartArea: false }, beginAtZero: true },
+        x: { ticks: { color: tick, maxTicksLimit: 8, maxRotation: 0, autoSkipPadding: 24 }, grid: { display: false }, border: { color: grid } },
+        y: { ticks: { color: tick, precision: 0 }, grid: { color: grid }, border: { display: false }, beginAtZero: true },
+        y2: { position: 'right', ticks: { color: tick, callback: rightFmt }, grid: { display: false }, border: { display: false }, beginAtZero: true },
       },
     },
   });
 }
+const label = (t, bucket) => { const d = new Date(t); return bucket === 'day' ? d.toLocaleDateString([], { day: 'numeric', month: 'short' }) : d.toLocaleString([], { hour: '2-digit', minute: '2-digit', ...(bucket === 'hour' ? { day: 'numeric', month: 'short' } : {}) }); };
 
-function label(t, bucket) {
-  const d = new Date(t);
-  return bucket === 'day' ? d.toLocaleDateString() : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (bucket === 'hour' ? ` ${d.getDate()}/${d.getMonth() + 1}` : '');
-}
+function setState(text, cls) { $('stamp').textContent = text; $('dot').className = 'dot ' + (cls || ''); }
+function ago() { if (!lastOk) return; const s = Math.round((Date.now() - lastOk) / 1000); setState(`live · updated ${s < 5 ? 'just now' : s + ' s ago'}`, 'live'); }
 
 async function load() {
-  if (!token) { $('state').textContent = 'enter the API token'; $('state').className = 'pill'; return; }
+  if (!token) { setState('enter the API token in the sidebar'); return; }
   const hours = Number($('win').value);
   let data;
   try {
     const r = await fetch(`usage/stats?hours=${hours}`, { headers: { 'X-Auth-Token': token } });
     data = await r.json();
     if (!r.ok) throw new Error(r.status === 401 ? 'wrong API token' : data.error || r.statusText);
-  } catch (e) {
-    $('state').textContent = e.message; $('state').className = 'pill bad'; return;
-  }
-  $('msg').hidden = true;
-  $('state').textContent = `live · updated ${new Date().toLocaleTimeString()}`; $('state').className = 'pill ok';
+  } catch (e) { setState(e.message, 'bad'); $('msg').hidden = false; $('msg').textContent = `Could not load usage: ${e.message}`; return; }
+  $('msg').hidden = true; lastOk = Date.now(); ago();
 
   const rt = (data.requests.totals || [])[0] || {}, et = (data.executions.totals || [])[0] || {};
-  $('t_req').textContent = num(rt.requests);
-  $('t_rps').textContent = `${((rt.requests || 0) / (hours * 60)).toFixed(2)} per minute`;
-  $('t_bw').textContent = bytes((rt.bytes_in || 0) + (rt.bytes_out || 0));
-  $('t_bwio').textContent = `in ${bytes(rt.bytes_in)} · out ${bytes(rt.bytes_out)}`;
-  $('t_err').textContent = num(rt.errors);
-  $('t_errp').textContent = rt.requests ? `${(100 * (rt.errors || 0) / rt.requests).toFixed(2)}% of requests` : '';
-  $('t_lat').textContent = pair(rt.latency);
-  $('t_cli').textContent = num(rt.clients);
-  $('t_q').textContent = data.queue ?? '–';
-  $('t_bat').textContent = num(et.batches);
-  $('t_tests').textContent = `${num(et.tests)} test cases`;
-  $('t_cache').textContent = et.batches ? `${Math.round(100 * (et.cache_hits || 0) / et.batches)}%` : '–';
-  $('t_qw').textContent = pair(et.queue);
-  $('t_run').textContent = pair(et.run);
-  $('t_cost').textContent = usd(data.cost.compute_usd);
-  $('t_rate').textContent = `at $${data.cost.usd_per_vcpu_hour}/vCPU-hour`;
+  $('rate').textContent = `estimate at $${data.cost.usd_per_vcpu_hour} per vCPU-hour`;
   $('t_month').textContent = usd(data.cost.projected_month_compute_usd + data.cost.fixed_month_usd);
   $('t_monthd').textContent = `compute ${usd(data.cost.projected_month_compute_usd)} + fixed ${usd(data.cost.fixed_month_usd)}`;
+  $('t_cost').textContent = usd(data.cost.compute_usd);
+  $('t_bat').textContent = num(et.batches); $('t_tests').textContent = `${num(et.tests)} test cases`;
+  $('t_req').textContent = num(rt.requests); $('t_rps').textContent = `${((rt.requests || 0) / (hours * 60)).toFixed(2)} per minute`;
+  $('t_bw').textContent = bytes((rt.bytes_in || 0) + (rt.bytes_out || 0)); $('t_bwio').textContent = `in ${bytes(rt.bytes_in)} · out ${bytes(rt.bytes_out)}`;
+  $('t_err').textContent = num(rt.errors); $('t_errp').textContent = rt.requests ? `${(100 * (rt.errors || 0) / rt.requests).toFixed(2)}% of requests` : '';
+  $('t_lat').textContent = pair(rt.latency); $('t_cli').textContent = num(rt.clients);
+  $('t_q').textContent = data.queue ?? '–'; $('t_qw').textContent = pair(et.queue); $('t_run').textContent = pair(et.run);
+  $('t_cache').textContent = et.batches ? `${Math.round(100 * (et.cache_hits || 0) / et.batches)}%` : '–';
 
+  // Every time slot in the window, empty ones as 0, so the x axis is real time.
+  const step = { minute: 5 * 60e3, hour: 3600e3, day: 86400e3 }[data.bucket];
+  const end = Math.floor(Date.now() / step) * step;
+  const slots = []; for (let t = end - Math.ceil(hours * 3600e3 / step - 1) * step; t <= end; t += step) slots.push(t);
+  const fill = (series, key) => { const m = new Map(series.map((x) => [Math.floor(new Date(x._id).getTime() / step) * step, x[key]])); return slots.map((t) => m.get(t) || 0); };
   const rs = data.requests.series || [], es = data.executions.series || [];
-  chart('c_req', rs.map((x) => label(x._id, data.bucket)), [
-    { label: 'Requests', data: rs.map((x) => x.requests), backgroundColor: css('--a'), yAxisID: 'y' },
-    { label: 'Bandwidth', data: rs.map((x) => x.bytes), type: 'line', borderColor: css('--c'), backgroundColor: css('--c'), pointRadius: 0, yAxisID: 'y2' },
+  const a = css('--accent'), c3 = css('--c3'), g = css('--c2');
+  const labels = slots.map((t) => label(t, data.bucket));
+  chart('c_req', labels, [
+    { type: 'bar', label: 'Requests', data: fill(rs, 'requests'), backgroundColor: a, borderRadius: 3, maxBarThickness: 22, yAxisID: 'y' },
+    { type: 'line', label: 'Bandwidth', data: fill(rs, 'bytes'), borderColor: c3, backgroundColor: c3, pointRadius: 0, borderWidth: 2, tension: .25, yAxisID: 'y2' },
   ], (v) => bytes(v));
-  chart('c_exe', es.map((x) => label(x._id, data.bucket)), [
-    { label: 'Batches', data: es.map((x) => x.batches), backgroundColor: css('--b'), yAxisID: 'y' },
-    { label: 'Test cases', data: es.map((x) => x.tests), type: 'line', borderColor: css('--a'), backgroundColor: css('--a'), pointRadius: 0, yAxisID: 'y2' },
+  chart('c_exe', labels, [
+    { type: 'bar', label: 'Batches', data: fill(es, 'batches'), backgroundColor: g, borderRadius: 3, maxBarThickness: 22, yAxisID: 'y' },
+    { type: 'line', label: 'Test cases', data: fill(es, 'tests'), borderColor: a, backgroundColor: a, pointRadius: 0, borderWidth: 2, tension: .25, yAxisID: 'y2' },
   ], (v) => v);
 
-  $('b_lang').innerHTML = (data.executions.languages || []).map((l) => `<tr><td>${esc(l._id)}</td><td class="n">${num(l.batches)}</td><td class="n">${num(l.tests)}</td>
-    <td class="n">${l.batches ? Math.round(100 * l.accepted / l.batches) : 0}%</td><td class="n">${(l.cpu_s || 0).toFixed(1)}</td><td class="n">${ms((l.run || [])[0])}</td><td class="n">${ms((l.run || [])[1])}</td></tr>`).join('') || '<tr><td colspan="7">No batches in this window.</td></tr>';
-  const ver = data.executions.verdicts || [], st = data.requests.statuses || [];
-  $('b_ver').innerHTML = Array.from({ length: Math.max(ver.length, st.length) }, (_, i) => `<tr>
-    <td>${esc(ver[i]?._id ?? '')}</td><td class="n">${ver[i] ? num(ver[i].batches) : ''}</td><td></td>
-    <td>${esc(st[i]?._id ?? '')}</td><td class="n">${st[i] ? num(st[i].requests) : ''}</td></tr>`).join('') || '<tr><td colspan="5">No data in this window.</td></tr>';
-  $('b_cli').innerHTML = (data.requests.clients || []).map((c) => `<tr><td>${esc(c._id.ip)}</td><td>${esc(c._id.origin || '–')}</td><td class="n">${num(c.requests)}</td>
-    <td class="n">${bytes(c.bytes)}</td><td>${esc(new Date(c.last_seen).toLocaleString())}</td><td class="ua" title="${esc(c._id.user_agent)}">${esc(c._id.user_agent || '–')}</td></tr>`).join('') || '<tr><td colspan="6">No requests in this window.</td></tr>';
-  $('b_end').innerHTML = (data.requests.endpoints || []).map((e) => `<tr><td>${esc(e._id.method)}</td><td>${esc(e._id.endpoint)}</td><td class="n">${num(e.requests)}</td>
-    <td class="n">${bytes(e.bytes)}</td><td class="n">${ms((e.latency || [])[0])}</td><td class="n">${ms((e.latency || [])[1])}</td></tr>`).join('') || '<tr><td colspan="6">No requests in this window.</td></tr>';
+  $('b_lang').innerHTML = (data.executions.languages || []).map((l) => { const p = l.batches ? 100 * l.accepted / l.batches : 0;
+    return `<tr><td>${esc(l._id)}</td><td class="r">${num(l.batches)}</td><td class="r">${num(l.tests)}</td><td>${bar(p, p < 40 ? 'bad' : p < 70 ? 'warn' : '')}</td>
+    <td class="r">${(l.cpu_s || 0).toFixed(1)}</td><td class="r">${ms((l.run || [])[0])}</td><td class="r">${ms((l.run || [])[1])}</td></tr>`; }).join('')
+    || '<tr><td colspan="7" class="empty">No batches in this window.</td></tr>';
+  const verTotal = (data.executions.verdicts || []).reduce((s, v) => s + v.batches, 0);
+  $('b_ver').innerHTML = (data.executions.verdicts || []).map((v) => `<tr><td><span class="badge ${v._id === 'Accepted' ? 'good' : /Compilation|Internal/.test(v._id) ? 'warn' : 'bad'}">${esc(v._id)}</span></td>
+    <td class="r">${num(v.batches)}</td><td>${bar(verTotal ? 100 * v.batches / verTotal : 0, v._id === 'Accepted' ? '' : 'warn')}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No batches in this window.</td></tr>';
+  const stTotal = (data.requests.statuses || []).reduce((s, v) => s + v.requests, 0);
+  $('b_st').innerHTML = (data.requests.statuses || []).map((s) => `<tr><td><span class="badge ${s._id < 400 ? 'good' : s._id < 500 ? 'warn' : 'bad'}">${esc(s._id)}</span></td>
+    <td class="r">${num(s.requests)}</td><td>${bar(stTotal ? 100 * s.requests / stTotal : 0, s._id < 400 ? '' : 'bad')}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No requests in this window.</td></tr>';
+  $('b_cli').innerHTML = (data.requests.clients || []).map((c) => `<tr><td class="mono">${esc(c._id.ip)}</td><td>${esc(c._id.origin || '–')}</td><td class="r">${num(c.requests)}</td>
+    <td class="r">${bytes(c.bytes)}</td><td>${esc(new Date(c.last_seen).toLocaleString())}</td><td class="ua" title="${esc(c._id.user_agent)}">${esc(c._id.user_agent || '–')}</td></tr>`).join('')
+    || '<tr><td colspan="6" class="empty">No requests in this window.</td></tr>';
+  $('b_end').innerHTML = (data.requests.endpoints || []).map((e) => `<tr><td><span class="badge">${esc(e._id.method)}</span></td><td class="mono">${esc(e._id.endpoint)}</td>
+    <td class="r">${num(e.requests)}</td><td class="r">${bytes(e.bytes)}</td><td class="r">${ms((e.latency || [])[0])}</td><td class="r">${ms((e.latency || [])[1])}</td></tr>`).join('')
+    || '<tr><td colspan="6" class="empty">No requests in this window.</td></tr>';
 }
 
-$('save').onclick = () => { token = $('token').value.trim(); try { localStorage.setItem('judge0_usage_token', token); } catch {} load(); };
+// Sidebar: highlight the section in view and mirror it in the page title.
+const links = [...document.querySelectorAll('nav a')];
+const names = { overview: 'Overview', traffic: 'Traffic', executions: 'Executions', languages: 'Languages', clients: 'Clients', endpoints: 'Endpoints' };
+const io = new IntersectionObserver((entries) => entries.forEach((e) => { if (!e.isIntersecting) return;
+  links.forEach((l) => l.classList.toggle('active', l.hash === '#' + e.target.id)); $('title').textContent = names[e.target.id]; }), { rootMargin: '-90px 0px -60% 0px' });
+Object.keys(names).forEach((id) => { const el = $(id); if (el) io.observe(el); });
+
+$('save').onclick = () => { token = $('token').value.trim(); store.set('judge0_usage_token', token); load(); };
 $('token').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('save').click(); });
-$('win').onchange = () => { try { localStorage.setItem('judge0_usage_window', $('win').value); } catch {} load(); };
+$('win').onchange = () => { store.set('judge0_usage_window', $('win').value); load(); };
+$('refresh').onclick = load;
+$('theme').onclick = () => {
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const cur = document.documentElement.dataset.theme || (dark ? 'dark' : 'light');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next; store.set('judge0_usage_theme', next); load();
+};
 load();
 setInterval(() => { if (!document.hidden) load(); }, 15000);
+setInterval(ago, 1000);
 </script>
 </body>
 </html>
