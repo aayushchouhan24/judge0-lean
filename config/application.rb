@@ -21,6 +21,10 @@ module Judge0API
 
     config.active_job.queue_adapter = :resque
 
+    # Usage analytics: one MongoDB document per request (no-op without MONGODB_URI).
+    require_relative "../lib/usage"
+    config.middleware.insert_after ActionDispatch::RemoteIp, Usage::RequestTracker
+
     # Unknown tokens and language ids answer 404, as ActiveRecord::RecordNotFound did.
     config.action_dispatch.rescue_responses["RecordNotFound"] = :not_found
 

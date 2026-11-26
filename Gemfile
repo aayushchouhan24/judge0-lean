@@ -5,6 +5,8 @@ gem 'rails', '~> 6.1'
 gem 'active_model_serializers', '~> 0.10'
 gem 'enumerations', '~> 2.3'
 gem 'httparty', '~> 0.21'
+gem 'mongo', '~> 2.20.0'
+gem 'bson', '~> 4.15' # bson 5 pulls bigdecimal 4.x over Ruby 2.7's built-in BigDecimal
 gem 'pry-byebug', '~> 3.9'
 gem 'pry-rails', '~> 0.3'
 gem 'puma', '~> 5.6'

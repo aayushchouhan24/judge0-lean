@@ -58,6 +58,7 @@ class IsolateJob < ApplicationJob
     cleanup(raise_exception = false)
   ensure
     (@submissions || []).each { |s| call_callback(s) }
+    Usage.record_execution(@submissions, **(@usage || {})) if @submissions
   end
 
   private
@@ -138,18 +139,22 @@ class IsolateJob < ApplicationJob
     cache_key = compile_cache_key
     cached = compile_cache_lookup(cache_key)
 
+    @usage = { cache_hit: !!cached }
     if cached && cached[:failed]
+      @usage[:language] = cached[:language]
       apply_compilation_error(cached[:compile_output])
       return :failure
     elsif cached
       `sudo cp #{cached[:snapshot]} #{snapshot_file}`
       restore_snapshot
+      @usage[:language] = detect_language
       apply_compile_output(cached[:compile_output])
       return :success
     end
 
     File.open(source_file, "wb") { |f| f.write(@leader.source_code) } unless @leader.is_project
     extract_archive
+    @usage[:language] = detect_language
 
     result, compile_output, timed_out = compile
     if result == :failure
@@ -463,7 +468,7 @@ class IsolateJob < ApplicationJob
     return nil if Time.now - File.mtime(meta_path) > Config::COMPILE_CACHE_TTL
 
     meta = JSON.parse(File.read(meta_path))
-    entry = { failed: meta["failed"] == true, compile_output: meta["compile_output"] }
+    entry = { failed: meta["failed"] == true, compile_output: meta["compile_output"], language: meta["language"] }
     unless entry[:failed]
       entry[:snapshot] = cache_path(key, "tar")
       return nil unless File.exist?(entry[:snapshot])
@@ -487,7 +492,7 @@ class IsolateJob < ApplicationJob
 
     meta = cache_path(key, "json")
     tmp_meta = "#{meta}.#{Process.pid}.tmp"
-    File.write(tmp_meta, { failed: failed, compile_output: compile_output }.to_json)
+    File.write(tmp_meta, { failed: failed, compile_output: compile_output, language: (@usage || {})[:language] }.to_json)
     File.rename(tmp_meta, meta)
     prune_compile_cache
   rescue StandardError
@@ -510,6 +515,22 @@ class IsolateJob < ApplicationJob
       break if total <= limit
       File.delete(p) rescue nil
       total -= size
+    end
+  end
+
+  # Best-effort language label for usage analytics, from the project's compile/run scripts
+  # (or the Judge0 language for single-file submissions).
+  def detect_language
+    return @leader.language.try(:name).to_s unless @leader.is_project
+    script = %w[compile compile.sh run run.sh].collect { |f| File.read(File.join(boxdir, f)) rescue "" }.join("\n")
+    case script
+    when /\bjavac\b|\bjava\b/ then "java"
+    when /\bg\+\+/ then "cpp"
+    when /\bgcc\b/ then "c"
+    when /\bnode\b/ then "javascript"
+    when /\bpython3?\b/ then "python"
+    when /\bgo\s+(build|run)\b/ then "go"
+    else script[/\A\s*(\S+)/, 1] || "unknown"
     end
   end
 

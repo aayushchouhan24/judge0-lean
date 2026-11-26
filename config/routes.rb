@@ -25,4 +25,6 @@ Rails.application.routes.draw do
 
   get 'workers', to: 'health#workers'
   get 'healthz', to: 'health#healthz'
+  get 'usage', to: 'usage#page'
+  get 'usage/stats', to: 'usage#stats'
 end
