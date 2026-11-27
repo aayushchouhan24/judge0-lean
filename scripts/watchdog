@@ -1,0 +1,125 @@
+#!/usr/bin/env ruby
+# Worker watchdog. Deletes worker pods that are Running but not working, so the Deployment
+# replaces them with fresh pods. A worker is "not working" when its Resque heartbeat (written
+# to Redis every RESQUE_HEARTBEAT_SECONDS) is missing or stale. This catches any cause: lost
+# network (e.g. a pod that started without a Cilium endpoint on a fresh node), a hung
+# process, a crash loop inside the container. Kubernetes alone would keep such pods "Running".
+#
+# Usage: ruby scripts/watchdog            (in the cluster, with a service account that can
+#                                          list and delete pods in its namespace)
+#        ruby scripts/watchdog --self-test
+require "json"
+require "net/http"
+require "openssl"
+require "time"
+
+GRACE_SECONDS = Integer(ENV.fetch("WATCHDOG_GRACE_SECONDS", 180)) # pod boot + Rails load
+STALE_SECONDS = Integer(ENV.fetch("WATCHDOG_STALE_SECONDS", 60))  # 4 missed heartbeats at 15s
+PASS_SECONDS  = Integer(ENV.fetch("WATCHDOG_PASS_SECONDS", 15))
+SELECTOR      = ENV.fetch("WATCHDOG_SELECTOR", "app.kubernetes.io/name=judge0-workers")
+HEARTBEAT_KEY = "#{ENV['RESQUE_NAMESPACE'].to_s.empty? ? 'resque' : ENV['RESQUE_NAMESPACE']}:workers:heartbeat"
+
+# Resque heartbeat fields are "hostname:pid:queues"; a pod's hostname is its name.
+def latest_beats(heartbeats)
+  heartbeats.each_with_object({}) do |(worker, at), beats|
+    host = worker.split(":").first
+    t = Time.parse(at) rescue next
+    beats[host] = t if beats[host].nil? || t > beats[host]
+  end
+end
+
+# Pods to delete: Running, not already terminating, past the grace period, and with no
+# heartbeat in STALE_SECONDS. Oldest first.
+def stuck_pods(pods, beats, now)
+  pods.select do |pod|
+    next false unless pod.dig("status", "phase") == "Running" && pod.dig("metadata", "deletionTimestamp").nil?
+    started = pod.dig("status", "startTime") or next false
+    next false if now - Time.parse(started) < GRACE_SECONDS
+    beat = beats[pod.dig("metadata", "name")]
+    beat.nil? || now - beat > STALE_SECONDS
+  end.sort_by { |pod| pod.dig("status", "startTime") }
+end
+
+def self_test
+  now = Time.parse("2026-01-01T12:00:00Z")
+  pod = ->(name, age, phase = "Running", deleting = nil) {
+    { "metadata" => { "name" => name, "deletionTimestamp" => deleting }.compact,
+      "status" => { "phase" => phase, "startTime" => (now - age).iso8601 } }
+  }
+  beats = latest_beats(
+    "ok:65:1.13.1" => (now - 10).iso8601, "ok:66:1.13.1" => (now - 500).iso8601,
+    "stale:65:1.13.1" => (now - 200).iso8601, "bad:1:x" => "not a time"
+  )
+  raise "latest beat per host" unless beats["ok"] == now - 10 && !beats.key?("bad")
+  pods = [pod["ok", 900], pod["stale", 900], pod["silent", 900], pod["young", 30],
+          pod["pending", 900, "Pending"], pod["gone", 900, "Running", now.iso8601]]
+  got = stuck_pods(pods, beats, now).map { |p| p["metadata"]["name"] }
+  raise "stuck_pods returned #{got}" unless got.sort == %w[silent stale]
+  puts "watchdog self-test ok"
+end
+
+class Kube
+  DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+  def initialize
+    @namespace = File.read("#{DIR}/namespace").strip
+    @http = Net::HTTP.new(ENV.fetch("KUBERNETES_SERVICE_HOST"), ENV.fetch("KUBERNETES_SERVICE_PORT", "443"))
+    @http.use_ssl = true
+    @http.ca_file = "#{DIR}/ca.crt"
+    @http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+    @http.open_timeout = @http.read_timeout = 10
+  end
+
+  def pods(selector)
+    path = "/api/v1/namespaces/#{@namespace}/pods?labelSelector=#{URI.encode_www_form_component(selector)}"
+    JSON.parse(request(Net::HTTP::Get.new(path)))["items"]
+  end
+
+  def delete_pod(name)
+    request(Net::HTTP::Delete.new("/api/v1/namespaces/#{@namespace}/pods/#{name}"))
+  end
+
+  private
+
+  def request(req)
+    req["Authorization"] = "Bearer #{File.read("#{DIR}/token").strip}" # re-read: tokens rotate
+    res = @http.request(req)
+    raise "#{req.method} #{req.path}: HTTP #{res.code}" unless res.is_a?(Net::HTTPSuccess)
+    res.body
+  end
+end
+
+def log(msg)
+  puts "[#{Time.now.utc.iso8601}] #{msg}"
+  $stdout.flush
+end
+
+def run
+  require "redis"
+  redis = Redis.new(host: ENV.fetch("REDIS_HOST"), port: ENV.fetch("REDIS_PORT", 6379),
+                    password: ENV["REDIS_PASSWORD"], connect_timeout: 3, read_timeout: 3)
+  kube = Kube.new
+  log "watching #{SELECTOR}: grace #{GRACE_SECONDS}s, stale after #{STALE_SECONDS}s"
+  loop do
+    begin
+      # Use Redis's clock: Resque writes heartbeats with it.
+      now = Time.at(redis.time.first)
+      # Redis keeps no data across restarts, so heartbeats are missing until workers reconnect.
+      raise "Redis restarted recently" if redis.info("server")["uptime_in_seconds"].to_i < GRACE_SECONDS
+      beats = latest_beats(redis.hgetall(HEARTBEAT_KEY))
+      # One pod per pass, so a wrong reading can never empty the pool at once.
+      if (pod = stuck_pods(kube.pods(SELECTOR), beats, now).first)
+        name = pod.dig("metadata", "name")
+        beat = beats[name]
+        log "deleting #{name}: #{beat ? "last heartbeat #{(now - beat).round}s ago" : 'no heartbeat since start'}"
+        kube.delete_pod(name)
+      end
+    rescue StandardError => e
+      # If the watchdog cannot read Redis or the API itself, it deletes nothing.
+      log "pass skipped: #{e.class}: #{e.message}"
+    end
+    sleep PASS_SECONDS
+  end
+end
+
+ARGV.include?("--self-test") ? self_test : run
